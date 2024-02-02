@@ -1,0 +1,58 @@
+# construct local frame of bases
+
+---
+A:
+  center:
+    name: N9
+    index: 10
+  ringatom1:
+    name: C4
+    index: 4
+  ringatom2:
+    name: C8
+    index: 9
+  sugeratom:
+    name: C1'
+    index: 0
+
+U:
+  center:
+    name: N1
+    index: 1
+  ringatom1:
+    name: C2
+    index: 2
+  ringatom2:
+    name: C6
+    index: 8
+  sugeratom:
+    name: C1'
+    index: 0
+
+G:
+  center:
+    name: N9
+    index: 10
+  ringatom1:
+    name: C4
+    index: 5
+  ringatom2:
+    name: C8
+    index: 9
+  sugeratom:
+    name: C1'
+    index: 0
+
+C: 
+  center:
+    name: N1
+    index: 1
+  ringatom1:
+    name: C2
+    index: 2
+  ringatom2:
+    name: C6
+    index: 7
+  sugeratom:
+    name: C1'
+    index: 0

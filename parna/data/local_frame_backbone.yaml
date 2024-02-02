@@ -1,0 +1,41 @@
+
+---
+N1:
+  center:
+    index: 17
+  ringatom1:
+    index: 11
+  ringatom2:
+    index: 16
+  sugeratom:
+    index: 6
+
+N2:
+  center:
+    index: 19
+  ringatom1:
+    index: 13
+  ringatom2:
+    index: 18
+  sugeratom:
+    index: 9
+
+N3:
+  center:
+    index: 19
+  ringatom1:
+    index: 13
+  ringatom2:
+    index: 18
+  sugeratom:
+    index: 9
+
+N4:
+  center:
+    index: 19
+  ringatom1:
+    index: 13
+  ringatom2:
+    index: 18
+  sugeratom:
+    index: 9
