@@ -11,7 +11,7 @@ from parna.logger import getLogger
 from parna.utils import map_atoms, normalize
 
 
-logger = getLogger()
+logger = getLogger(__name__)
 
 
 def flexible_align(mobile, template, atom_mapping=None, force_constant=100.0, max_iterations=6):

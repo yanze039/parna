@@ -7,6 +7,7 @@ import yaml
 
 
 DATA = Path(__file__).parent / "data"
+TEMPLATE = Path(__file__).parent / "template"
 
 def map_atoms(template, query):
     mcs = rdFMCS.FindMCS(
@@ -40,9 +41,9 @@ def extract_residue(residue_template, residue_name, output_dir, keep_hydrogen=Fa
 
     rd_mol = Chem.MolFromPDBFile(str(output_dir/f"{residue_name}.pdb"), removeHs=False, sanitize=False)
     if with_phosphate:
-        sugar_template = Chem.MolFromPDBFile(str(DATA/"sugar_template_with_PO3.pdb"), removeHs=True, sanitize=False)
+        sugar_template = Chem.MolFromPDBFile(str(TEMPLATE/"sugar_template_with_PO3.pdb"), removeHs=True, sanitize=False)
     else:
-        sugar_template = Chem.MolFromPDBFile(str(DATA/"sugar_template.pdb"), removeHs=True, sanitize=False)
+        sugar_template = Chem.MolFromPDBFile(str(TEMPLATE/"sugar_template.pdb"), removeHs=True, sanitize=False)
     atom_maps = map_atoms(sugar_template, rd_mol)
     
     mapping_dict = {}

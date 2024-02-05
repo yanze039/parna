@@ -5,10 +5,9 @@ import psi4
 from typing import List
 import os
 from pathlib import Path
-import argparse 
 from parna.logger import getLogger
 
-logger = getLogger()
+logger = getLogger(__name__)
 
 
 def mk_psi4_geometry(atom_names: List[str], coords: np.ndarray, charge: int, mult: int):

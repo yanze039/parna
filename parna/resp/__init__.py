@@ -5,7 +5,7 @@ from pathlib import Path
 from parna.logger import getLogger
 import shutil
 
-logger = getLogger()
+logger = getLogger(__name__)
 
 logger.info("Checking existence of Multiwfn...")
 if not shutil.which("Multiwfn"):

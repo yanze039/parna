@@ -8,6 +8,10 @@ from parna.utils import antechamber, atomName_to_index, map_atoms, rd_load_file,
 from parna.molops import flexible_align
 from parna.molops import ortho_frame, rotate_conformer, translate_conformer
 
+from parna.logger import getLogger
+
+logger = getLogger(__name__)
+
 template_dir = Path(__file__).parent/"template"
 FRAG = Path(__file__).parent/"fragments"
 DATA = Path(__file__).parent/"data"
@@ -111,7 +115,15 @@ def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype
         atom_mapping=inverse_atom_mapping,
         force_constant=100.0,
     )
-    pdbblock = Chem.MolToPDBBlock(rd_mol)
+    # Find BUG: the atom names are not preserved from mol2. we use parmed to fix this.
+    # pdbblock = Chem.MolToPDBBlock(rd_mol)
+    pmd_mol = pmd.rdkit.load_rdkit(rd_mol)
+    old_mol = pmd.load_file(input_file)
+    for idx, atom in enumerate(pmd_mol.atoms):
+        atom.name = old_mol.atoms[idx].name
+    pmd_mol.write_pdb("_tmp.pdb")
+    with open("_tmp.pdb", "r") as f:
+        pdbblock = f.read()
     atom_list = []
     for line in pdbblock.split("\n"):
         if line.startswith("ATOM"):
@@ -120,6 +132,7 @@ def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype
         elif line.startswith("HETATM"):
             line = "ATOM  " + line[6:17] + f"{residue_name:>3}" + line[20:]
             atom_list.append(line)
+    os.remove("_tmp.pdb")
     return "\n".join(atom_list)
 
 
@@ -290,3 +303,38 @@ def make_fragment(
     pmd_mol.save(str(output_dir/f"{residue_name}.lib"), overwrite=True)
     pmd_mol.to_structure().write_pdb(str(output_dir/f"{residue_name}.pdb"), use_hetatoms=False)
 
+
+def replace_residue(oligo_pdb, residue_pdb, residue_id, output_file):
+    logger.info("Replacing residue %d in %s with %s", residue_id, oligo_pdb, residue_pdb)
+    with open(oligo_pdb, 'r') as f:
+        lines = f.readlines()
+    
+    old_residue_line_index = []
+    for idx, line in enumerate(lines):
+        if line[22:26].strip() == str(residue_id):
+            old_residue_line_index.append(idx)
+    
+    index_diff = np.array(old_residue_line_index)[1:] - np.array(old_residue_line_index)[:-1]
+    if not np.all(index_diff == 1):
+        raise ValueError("Residue lines are not continuous")
+    chain_id = lines[old_residue_line_index[0]][21]
+    new_residue_lines = []
+    with open(residue_pdb, 'r') as f:
+        _new_lines = f.readlines()
+        for line in _new_lines:
+            _line = line[:22] + f"{residue_id:>4}" + line[26:]
+            _line = _line[:21] + chain_id + _line[22:]  
+            if not _line.endswith("\n"):
+                _line += "\n"
+            new_residue_lines.append(_line)
+    
+    del lines[old_residue_line_index[0]:old_residue_line_index[-1]+1]
+    for line in new_residue_lines[::-1]:
+        lines.insert(old_residue_line_index[0], line)
+    logger.info("Writing to output file to %s", str(output_file))
+    
+    with open(output_file, 'w') as f:
+        for idx, line in enumerate(lines):
+            f.write(
+                line[:6] + f"{idx+1:>5}" + line[11:]
+            )

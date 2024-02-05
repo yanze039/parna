@@ -1,13 +1,12 @@
 from rdkit import Chem
 from pathlib import Path
 from rdkit.Chem import rdMolTransforms
-from rdkit.Chem import ChemicalForceFields
 import os
-from parna.utils import rd_load_file, atomName_to_index, map_atoms, getStringlist
+from parna.utils import rd_load_file, atomName_to_index, map_atoms
 from parna.xtb import write_xtb_input, xtb
 from parna.logger import getLogger
 
-logger = getLogger()
+logger = getLogger(__name__)
 
 ## dihedral angle constraints
 # O4'-C4'-C3'-C2' to -36 degree

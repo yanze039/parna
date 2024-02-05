@@ -10,7 +10,7 @@ from parna.utils import flatten_list, atomName_to_index, map_atoms
 
 from parna.logger import getLogger
 
-logger = getLogger()
+logger = getLogger(__name__)
 
 PeriodicTable = Chem.GetPeriodicTable()
 smartsStringPattern = {

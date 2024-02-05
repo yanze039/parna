@@ -10,8 +10,9 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-def getLogger():
+
+def getLogger(name):
     # Setting logging configurations
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger(name)
     return logger
 

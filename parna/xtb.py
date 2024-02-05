@@ -4,7 +4,7 @@ from pathlib import Path
 from parna.utils import getStringlist
 from parna.logger import getLogger
 
-logger = getLogger()
+logger = getLogger(__name__)
 
 
 def write_xtb_input(dihedral_atoms, dihedral_angles, scan_atoms, scan_type="dihedral", scan_start=0, scan_end=288, scan_steps=5, force_constant=0.05):

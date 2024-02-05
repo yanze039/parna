@@ -63,11 +63,12 @@ def map_atoms(template, query):
 def getStringlist(mlist):
     return [str(i) for i in mlist]
 
+
 def flatten_list(l):
     return [item for sublist in l for item in sublist]
 
+
 def antechamber(input_file, input_type, output, atom_type, residue_name, charge=0):
-    # by antechamber
     command = [
         "antechamber", "-fi", str(input_type), "-i", str(input_file),
         "-fo", "mol2", "-o", str(output), "-at", atom_type,
@@ -75,6 +76,7 @@ def antechamber(input_file, input_type, output, atom_type, residue_name, charge=
     ]
     print(" ".join(command))
     os.system(" ".join(command))
+
 
 def inverse_mapping(mapping):
     if isinstance(mapping, dict):
