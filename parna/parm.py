@@ -28,7 +28,9 @@ def check_atomtype_mismatch(parm, rst7):
     return mismatched_atoms
 
 
-def parameterize(oligoFile, proteinFile=None, external_libs=[], output_dir=None, n_ions=50, prefix="complex", check_atomtypes=True):
+def parameterize(oligoFile, proteinFile=None, external_libs=[], 
+                 additional_frcmods=[], output_dir=None, n_cations=0, n_anions=0, 
+                 prefix="complex", check_atomtypes=True, solvated=True, saveparm=True):
     oligoFile = Path(oligoFile)
     
     leap_content = []
@@ -37,6 +39,10 @@ def parameterize(oligoFile, proteinFile=None, external_libs=[], output_dir=None,
     leap_content.append(f"source leaprc.RNA.OL3")
     leap_content.append(f"source leaprc.water.tip3p")
     leap_content.append(f"loadAmberParams {(frcmod).resolve()}")
+    if isinstance(additional_frcmods, str) or isinstance(additional_frcmods, Path):
+        additional_frcmods = [additional_frcmods]
+    for fd in additional_frcmods:
+        leap_content.append(f"loadAmberParams {(Path(fd)).resolve()}")
     residue_libs = list(LIB.glob("*.lib"))
     # internal libs
     for reslib in residue_libs:
@@ -63,13 +69,16 @@ def parameterize(oligoFile, proteinFile=None, external_libs=[], output_dir=None,
         leap_content.append(f"complex = combine {{ oligo protein }}")
     else:
         leap_content.append(f"complex = oligo")
-    leap_content.append(f"solvatebox complex TIP3PBOX 15.0 0.75")
-    leap_content.append(f"addionsrand complex Na+ 0")
-    leap_content.append(f"addionsrand complex Cl- 0")
-    leap_content.append(f"addionsrand complex Na+ {n_ions}")
-    leap_content.append(f"addionsrand complex Cl- {n_ions}")
+    
+    if solvated:
+        leap_content.append(f"solvatebox complex TIP3PBOX 15.0 0.75")
+        leap_content.append(f"addionsrand complex Na+ 0")
+        leap_content.append(f"addionsrand complex Cl- 0")
+        leap_content.append(f"addionsrand complex Na+ {n_cations}")
+        leap_content.append(f"addionsrand complex Cl- {n_anions}")
     leap_content.append(f"savepdb complex {prefix}.pdb")
-    leap_content.append(f"saveAmberParm complex {prefix}.parm7 {prefix}.rst7")
+    if saveparm:
+        leap_content.append(f"saveAmberParm complex {prefix}.parm7 {prefix}.rst7")
     leap_content.append("quit")
     cwd = Path.cwd()
     os.chdir(output_dir)
@@ -97,7 +106,7 @@ def parameterize(oligoFile, proteinFile=None, external_libs=[], output_dir=None,
             logger.info("Atomtype check passed")
 
 
-def alchemical_parameterize(oligoFile1, oligoFile2, proteinFile=None, external_libs=[], output_dir=None, n_ions=50, prefix="complex", check_atomtypes=True):
+def alchemical_parameterize(oligoFile1, oligoFile2, proteinFile=None, external_libs=[], additional_frcmods=[], output_dir=None, n_cations=0, n_anions=0, prefix="complex", check_atomtypes=True):
     oligoFile1 = Path(oligoFile1)
     oligoFile2 = Path(oligoFile2)
     
@@ -107,6 +116,10 @@ def alchemical_parameterize(oligoFile1, oligoFile2, proteinFile=None, external_l
     leap_content.append(f"source leaprc.RNA.OL3")
     leap_content.append(f"source leaprc.water.tip3p")
     leap_content.append(f"loadAmberParams {(frcmod).resolve()}")
+    if isinstance(additional_frcmods, str) or isinstance(additional_frcmods, Path):
+        additional_frcmods = [additional_frcmods]
+    for fd in additional_frcmods:
+        leap_content.append(f"loadAmberParams {(Path(fd)).resolve()}")
     residue_libs = list(LIB.glob("*.lib"))
     # internal libs
     for reslib in residue_libs:
@@ -135,10 +148,8 @@ def alchemical_parameterize(oligoFile1, oligoFile2, proteinFile=None, external_l
     else:
         leap_content.append(f"complex = combine {{ oligo1 oligo2 }}")
     leap_content.append(f"solvatebox complex TIP3PBOX 15.0 0.75")
-    leap_content.append(f"addionsrand complex Na+ 0")
-    leap_content.append(f"addionsrand complex Cl- 0")
-    leap_content.append(f"addionsrand complex Na+ {n_ions}")
-    leap_content.append(f"addionsrand complex Cl- {n_ions}")
+    leap_content.append(f"addionsrand complex Na+ {n_cations}")
+    leap_content.append(f"addionsrand complex Cl- {n_anions}")
     leap_content.append(f"savepdb complex {prefix}.pdb")
     leap_content.append(f"saveAmberParm complex {prefix}.parm7 {prefix}.rst7")
     leap_content.append("quit")
@@ -169,6 +180,48 @@ def alchemical_parameterize(oligoFile1, oligoFile2, proteinFile=None, external_l
             raise RuntimeError("Atomtype mismatched")
         else:
             logger.info("Atomtype check passed")
+
+
+def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_forcefield="gaff2", parm_set="parm10", atom_type="amber"):   
+    if not Path(input_file).suffix == ".mol2":
+        _mol2_file = Path(input_file).parent / (Path(input_file).stem + ".mol2")
+        command_antechamber = [
+            "antechamber",
+            "-fi", "pdb",
+            "-i", str(input_file),
+            "-fo", "mol2",
+            "-o", str(_mol2_file),
+            "-at", atom_type,
+            "-pf", "y"
+        ]
+        logger.info(" ".join(command_antechamber))
+        os.system(" ".join(command_antechamber))
+    else:
+        _mol2_file = input_file
+    _output_file = Path(output_file).parent / ("_" + Path(output_file).stem + ".frcmod")
+    command_major = [
+        "parmchk2",
+        "-i", str(_mol2_file),
+        "-f", "mol2",
+        "-o", str(_output_file),
+        "-a", "Y",
+        "-s", parm_set,
+        "-frc", major_forcefield
+    ]
+    logger.info(" ".join(command_major))
+    os.system(" ".join(command_major))
+    command_minor = [
+        "parmchk2",
+        "-i", str(_output_file),
+        "-f", "frcmod",
+        "-o", str(output_file),
+        "-a", "Y",
+        "-s", minor_forcefield,
+        "-frc", major_forcefield,
+        "-att", "2"
+    ]
+    logger.info(" ".join(command_minor))
+    os.system(" ".join(command_minor))
 
 
 if __name__ == "__main__":

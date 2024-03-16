@@ -47,11 +47,11 @@ def atomName_to_index(mol):
     return atomName_to_index
 
 
-def map_atoms(template, query):
+def map_atoms(template, query, ringMatchesRingOnly=False, bondCompare=rdFMCS.BondCompare.CompareAny):
     mcs = rdFMCS.FindMCS(
             [template, query], 
-            ringMatchesRingOnly=False,
-         bondCompare=rdFMCS.BondCompare.CompareAny  # PDB doesn't have bond order
+            ringMatchesRingOnly=ringMatchesRingOnly,  # PDB doesn't have ring information
+         bondCompare=bondCompare  # PDB doesn't have bond order
     )
     patt = Chem.MolFromSmarts(mcs.smartsString)
     template_Match = template.GetSubstructMatch(patt)
@@ -99,4 +99,17 @@ def read_yaml(YamlFile):
             data = (yaml.safe_load(stream))
         except yaml.YAMLError as exc:
             print(exc)
+    if data is None:
+        raise ValueError(f"Error in reading {YamlFile}")
     return data
+
+def list2string(alist, delimiter=","):
+    return delimiter.join([str(i) for i in alist])
+
+def remove_ter(pdbFile, outFile):
+    with open(pdbFile, "r") as f:
+        lines = f.readlines()
+    with open(outFile, "w") as f:
+        for line in lines:
+            if not line.startswith("TER"):
+                f.write(line)
