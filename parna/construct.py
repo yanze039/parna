@@ -12,7 +12,8 @@ from parna.logger import getLogger
 
 logger = getLogger(__name__)
 
-template_dir = Path(__file__).parent/"template"
+# template_dir = Path(__file__).parent/"template"
+TEMPLATE = Path(__file__).parent/"template"
 FRAG = Path(__file__).parent/"fragments"
 DATA = Path(__file__).parent/"data"
 FRAME = Path(__file__).parent/"local_frame"
@@ -25,20 +26,29 @@ OP1_charge = -0.7760
 OP2_charge = -0.7760
 
 
-def build_backbone_block(base_name: str, backbone_position: int):
+def get_base_attach_atoms():
+    return read_yaml(DATA/"attach_atoms.yaml")
 
-    baseFile = FRAG / f"Base_{base_name}_hvy.pdb"
-    backboneFile = FRAG / f"N{backbone_position}_backbone.pdb"
+def build_backbone_block(
+        baseFile,
+        backboneFile,
+        baseAttachPoint,
+        backboneAttachPoint,
+        bb_anchor_atom_pos,
+        base_local_frame,
+        backbone_local_frame,
+    ):
+    # read parameters
+    # baseFile = FRAG / f"Base_{base_name}_hvy.pdb"
+    # backboneFile = FRAG / f"N{backbone_position}_backbone.pdb"
+    # attach_atoms = read_yaml(DATA/"attach_atoms.yaml")
+    # bb_anchor_atom_pos = np.load(FRAME/f"N{backbone_position:d}_attach_point.npy")
+    # base_local_frame = np.load(FRAME/f"{base_name}_frame.npy")
+    # backbone_local_frame = np.load(FRAME/f"N{backbone_position:d}_frame.npy")
+    
     # read PDB file
     base = Chem.MolFromPDBFile(str(baseFile), sanitize=False)
     backbone = Chem.MolFromPDBFile(str(backboneFile), sanitize=False)
-    # read parameters
-    attach_atoms = read_yaml(DATA/"attach_atoms.yaml")
-    if attach_atoms is None:
-        raise ValueError("attach_atoms.yaml is not found")
-    bb_anchor_atom_pos = np.load(FRAME/f"N{backbone_position:d}_attach_point.npy")
-    base_local_frame = np.load(FRAME/f"{base_name}_frame.npy")
-    backbone_local_frame = np.load(FRAME/f"N{backbone_position:d}_frame.npy")
     # get new ortho basis from local frame, this is because N is not perfectly sp2 hybridized (planar).
     base_basis = ortho_frame(base_local_frame[0], base_local_frame[1])
     backbone_basis = ortho_frame(backbone_local_frame[0], backbone_local_frame[1])
@@ -48,7 +58,7 @@ def build_backbone_block(base_name: str, backbone_position: int):
     # np.linalg.inv(backbone_basis) @ (base_basis)
     final_transform = np.matmul( np.linalg.inv(backbone_basis), (base_basis) )
     rotate_conformer(base.GetConformer(), final_transform)
-    base_anchor_atom_pos = np.array(base.GetConformer().GetAtomPosition(attach_atoms[base_name]))
+    base_anchor_atom_pos = np.array(base.GetConformer().GetAtomPosition(baseAttachPoint))
     # translate molecules to backbone
     tranlation_vec = bb_anchor_atom_pos - base_anchor_atom_pos
     translate_conformer(base.GetConformer(), tranlation_vec)
@@ -56,19 +66,28 @@ def build_backbone_block(base_name: str, backbone_position: int):
     nucleoside = Chem.CombineMols(backbone,base)
     edmol = Chem.EditableMol(nucleoside)
     edmol.AddBond(
-        attach_atoms[f"N{backbone_position:d}"],
-        attach_atoms[base_name]+backbone.GetNumAtoms(),
+        backboneAttachPoint,
+        baseAttachPoint+backbone.GetNumAtoms(),
         order=Chem.rdchem.BondType.SINGLE
     )
     finalmol = edmol.GetMol()
+    Chem.SanitizeMol(finalmol)
     return finalmol
 
 
-def build_backbone(sequence, chain_id = "A"):
-    cap_file = FRAG / "m7gppp.pdb"
+def build_backbone(
+        sequence, 
+        baseAttachAtoms,
+        backboneAttachAtoms,
+        chain_id="A", 
+        cap_file=FRAG/"m7gppp.pdb",
+        template_dir=TEMPLATE,
+        local_frame_dir=FRAME,
+        ):
+    template_dir = Path(template_dir)
     if sequence[0] == "cap":
-        print("The oligo uses m7G-capped structure.")
-        template = Chem.MolFromPDBFile(str(template_dir/"m7gppp.pdb"), removeHs=False)
+        print("The oligo uses capped structure.")
+        template = Chem.MolFromPDBFile(str(TEMPLATE/"m7gppp.pdb"), removeHs=False)
         atom_maps = map_atoms(
             template,
             Chem.MolFromPDBFile(str(cap_file), removeHs=False)
@@ -81,32 +100,57 @@ def build_backbone(sequence, chain_id = "A"):
         myStructure.strip("@AT")
     else:
         myStructure = pmd.Structure()
+    
+    local_frame_dir = Path(local_frame_dir)
     for pos, basename in enumerate(sequence, start=1):
         print(f"Building residue {pos} with base {basename}")
         _basename = basename[0]
-        rd_block = build_backbone_block(_basename, pos)
+        rd_block = build_backbone_block(
+                        baseFile=FRAG/f"Base_{_basename}_hvy.pdb",
+                        backboneFile=template_dir/f"N{pos}_backbone.pdb",
+                        baseAttachPoint=baseAttachAtoms[_basename],
+                        backboneAttachPoint=backboneAttachAtoms["N"+str(pos)],
+                        bb_anchor_atom_pos=np.load(local_frame_dir/f"N{pos}_attach_point.npy"),
+                        base_local_frame=np.load(FRAME/f"{_basename}_frame.npy"),
+                        backbone_local_frame=np.load(local_frame_dir/f"N{pos}_frame.npy"),
+                    )
         pmd_block = pmd.rdkit.load_rdkit( rd_block )
-        template = Chem.MolFromPDBFile(str(template_dir/f"{basename}.pdb"), removeHs=False)
+        template = Chem.MolFromPDBFile(str(TEMPLATE/f"{basename}.pdb"), removeHs=False)
         atom_maps = map_atoms(template, rd_block)
         for template_i, block_j in atom_maps:
             atom = pmd_block.atoms[block_j]
             atom.name = template.GetAtoms()[template_i].GetPDBResidueInfo().GetName()
-            myStructure.add_atom(atom, 
-                                 resname=basename,
-                                 resnum=pos,
-                                 chain=chain_id
-                                 )
+            myStructure.add_atom(
+                atom, 
+                resname=basename,
+                resnum=pos,
+                chain=chain_id
+            )
     return myStructure
 
 
 def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype=None):
-
-    rd_mol = rd_load_file(input_file, removeHs=False, atomtype=atomtype)
+    logger.info(f"Building residue {residue_name} from {input_file} using template {template_residue}")
+    rd_mol = rd_load_file(str(input_file), removeHs=False, atomtype=atomtype)
     if not "." in str(template_residue):
-        rd_tmpl_block = build_backbone_block(template_residue, 1)
+        attach_atoms = read_yaml(DATA/"attach_atoms.yaml")
+        rd_tmpl_block = build_backbone_block(
+            baseFile=FRAG/f"Base_{template_residue[0]}_hvy.pdb",
+            backboneFile=FRAG / f"N1_backbone.pdb",
+            baseAttachPoint=attach_atoms[template_residue[0]],
+            backboneAttachPoint=attach_atoms["N1"],
+            bb_anchor_atom_pos=np.load(FRAME/f"N1_attach_point.npy"),
+            base_local_frame=np.load(FRAME/f"{template_residue[0]}_frame.npy"),
+            backbone_local_frame=np.load(FRAME/f"N1_frame.npy"),
+        )
     else:
         rd_tmpl_block = Chem.MolFromPDBFile(str(template_residue), removeHs=False, sanitize=False)
-    atom_mapping = map_atoms(rd_tmpl_block, rd_mol)
+    # sanitize the molecule to update the ring-info, otherwise the atom mapping will fail.
+    # Not sanitize --> RuntimeError: Pre-condition Violation, RingInfo not initialized.
+    Chem.SanitizeMol(rd_tmpl_block)
+    atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True)
+    logger.info("Atom mapping:")
+    logger.info(atom_mapping)
     
     inverse_atom_mapping = [(j, i) for i, j in atom_mapping]
     rd_mol = flexible_align(
@@ -118,7 +162,7 @@ def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype
     # Find BUG: the atom names are not preserved from mol2. we use parmed to fix this.
     # pdbblock = Chem.MolToPDBBlock(rd_mol)
     pmd_mol = pmd.rdkit.load_rdkit(rd_mol)
-    old_mol = pmd.load_file(input_file)
+    old_mol = pmd.load_file(str(input_file))
     for idx, atom in enumerate(pmd_mol.atoms):
         atom.name = old_mol.atoms[idx].name
     pmd_mol.write_pdb("_tmp.pdb")
@@ -166,7 +210,7 @@ def build_residue_with_phosphate(input_file, atom_name_mapping, residue_name, ch
     
     # align to template
     rd_mol = rd_load_file(input_file, removeHs=False)
-    template = Chem.MolFromPDBFile(str(template_dir/"sugar_template.pdb"), removeHs=False)
+    template = Chem.MolFromPDBFile(str(TEMPLATE/"sugar_template.pdb"), removeHs=False)
     atom_maps = map_atoms(rd_mol, template)
     new_mol = flexible_align(
         rd_mol,
@@ -175,15 +219,6 @@ def build_residue_with_phosphate(input_file, atom_name_mapping, residue_name, ch
         force_constant=100.0,
     )
 
-    # for atom in new_mol.GetAtoms():
-    #     print(atom.GetProp("_TriposPartialCharge"))
-    #     partial_charge = float(atom.GetProp("_TriposPartialCharge")) 
-    #     if partial_charge is None:
-    #         raise ValueError(f"Partial charge for atom {atom.GetSymbol()} is not found")
-    #     atom.SetProp('_GasteigerCharge', str(np.round(partial_charge, decimals=6)))
-    # with Chem.SDWriter(str(input_file.parent/f"{residue_name}._aligned._bk.sdf")) as writer:
-    #     for cid in range(new_mol.GetNumConformers()):
-    #         writer.write(new_mol, confId=cid)
     _pmd_mol = pmd.load_file(str(input_file))
     conformer = new_mol.GetConformer()
     for i in range(new_mol.GetNumAtoms()):
@@ -208,7 +243,7 @@ def build_residue_with_phosphate(input_file, atom_name_mapping, residue_name, ch
     pmd_mol.atoms[atom_name_mapping["O5'"]].type = "OS"
     pmd_mol.atoms[atom_name_mapping["O3'"]].charge = O3_charge
     pmd_mol.atoms[atom_name_mapping["O3'"]].type = "OS"
-    phosphate_mol = pmd.load_file(str(template_dir/"sugar_template_with_PO3.pdb"))
+    phosphate_mol = pmd.load_file(str(TEMPLATE/"sugar_template_with_PO3.pdb"))
     phosphate_template = pmd.modeller.residue.ResidueTemplate.from_residue(phosphate_mol.residues[0])
     
     P = pmd.Atom(name="P", type="P", charge=P_charge, atomic_number=15)
@@ -262,7 +297,7 @@ def make_fragment(
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True)
     
-    sugar_template_file = template_dir/"sugar_template.pdb"
+    sugar_template_file = TEMPLATE/"sugar_template.pdb"
     sugar_template = Chem.MolFromPDBFile(str(sugar_template_file), removeHs=False)
     rd_mol = rd_load_file(input_file, removeHs=False)
     atom_maps = map_atoms(sugar_template, rd_mol)

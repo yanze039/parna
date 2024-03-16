@@ -3,11 +3,17 @@ from rdkit import Chem
 from rdkit.Chem import rdFMCS
 import parmed as pmd
 from pathlib import Path
+from parna.utils import read_yaml
+from parna.molops import construct_local_frame
 import yaml
+import numpy as np
+import shutil
 
 
 DATA = Path(__file__).parent / "data"
 TEMPLATE = Path(__file__).parent / "template"
+FRAG = Path(__file__).parent/"fragments"
+FRAME = Path(__file__).parent/"local_frame"
 
 def map_atoms(template, query):
     mcs = rdFMCS.FindMCS(
@@ -110,8 +116,9 @@ def extract_backbone(input_file, output_dir,
     n_residues = len(pmd_mol.residues)
     attach_atoms = {}
     local_frame_backbone = {}
-    if end == -1:
-        end = n_residues - 1
+
+    if end < 0:
+        end = (n_residues + end) % n_residues
     for i in range(n_residues):
         if i < start:
             continue
@@ -129,15 +136,35 @@ def extract_backbone(input_file, output_dir,
                         with_phosphate=(residue.number not in residues_without_phosphate),
                         canonical_residue=canonical_residue
         )
+        if canonical_residue:
+            shutil.copy(
+                str(output_dir/f"{residue_name}_backbone.pdb"),
+                str(output_dir/f"N{i}_backbone.pdb")
+            )
         if frame_info is None:
             continue
         
+        attach_atoms[f"N{i}"] = frame_info["attach_atom"]
         attach_atoms[residue_name] = frame_info["attach_atom"]
         local_frame_backbone[residue_name] = {}
         local_frame_backbone[residue_name]["sugaratom"] = {"index": frame_info["sugaratom"]}
         local_frame_backbone[residue_name]["center"] = {"index": frame_info["center"]}
         local_frame_backbone[residue_name]["ringatom1"] = {"index": frame_info["ringatom1"]}
         local_frame_backbone[residue_name]["ringatom2"] = {"index": frame_info["ringatom2"]}
+        
+        # get backbone local frame
+        bb_frame = Chem.MolFromPDBFile(str(output_dir/f"{residue_name}.pdb"))
+        vector1, norm_vec = construct_local_frame(
+            bb_frame, frame_info["center"], frame_info["ringatom1"], 
+            frame_info["ringatom2"], frame_info["sugaratom"]
+        )
+        triangle = (np.stack([vector1, norm_vec], axis=0))
+        np.save(output_dir/f"{residue_name}_frame.npy", triangle)
+        np.save(output_dir/f"N{i}_frame.npy", triangle)
+        # get attach point
+        attech_point = bb_frame.GetConformer().GetAtomPosition(frame_info["center"])
+        np.save(output_dir/f"{residue_name}_attach_point.npy", np.array(attech_point))
+        np.save(output_dir/f"N{i}_attach_point.npy", np.array(attech_point))
     
     print("Saving attach_atoms.yaml and local_frame_backbone.yaml ...")
     print("File path:", output_dir.resolve())
@@ -145,7 +172,12 @@ def extract_backbone(input_file, output_dir,
         yaml.dump(attach_atoms, f)
     with open(output_dir/"local_frame_backbone.yaml", "w") as f:
         yaml.dump(local_frame_backbone, f)
-    return
+
+
+def extract_residue_from_pdb(input_file, output_file, residue_number):
+    pmd_mol = pmd.load_file(str(input_file))
+    residue_template = pmd.modeller.residue.ResidueTemplate().from_residue(pmd_mol.residues[residue_number-1]).to_structure()
+    residue_template.write_pdb(str(output_file), use_hetatoms=False)
 
 
 if __name__ == "__main__":
