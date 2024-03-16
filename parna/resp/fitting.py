@@ -5,12 +5,18 @@ from rdkit.Chem import rdFMCS, rdDetermineBonds
 from collections import Counter
 from pathlib import Path
 import os
+import shutil
 from collections import OrderedDict
 from parna.utils import flatten_list, atomName_to_index, map_atoms
-
 from parna.logger import getLogger
 
 logger = getLogger(__name__)
+
+
+logger.info("Checking existence of Multiwfn...")
+if not shutil.which("Multiwfn"):
+    raise FileNotFoundError("Multiwfn is not found in the PATH. Please install Multiwfn and add it to the PATH.")
+
 
 PeriodicTable = Chem.GetPeriodicTable()
 smartsStringPattern = {

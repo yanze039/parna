@@ -10,7 +10,7 @@ logger = getLogger(__name__)
 
 ## dihedral angle constraints
 # O4'-C4'-C3'-C2' to -36 degree
-# C4'-C3'-O3'-H3T to -60 degree
+# C4'-C3'-O3'-H3T to -120 degree
 # C3'-C2'-O2'-HO2' to -120 degree
 # C4'-C5'-O5'-HO5' to 180 degree
 dihedral_constraint_templates = [

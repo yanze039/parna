@@ -3,16 +3,9 @@ from parna.resp.psi4 import calculate_energy
 from parna.resp.fitting import fit_charges
 from pathlib import Path
 from parna.logger import getLogger
-import shutil
 
 logger = getLogger(__name__)
 
-logger.info("Checking existence of Multiwfn...")
-if not shutil.which("Multiwfn"):
-    raise FileNotFoundError("Multiwfn is not found in the PATH. Please install Multiwfn and add it to the PATH.")
-logger.info("Checking existence of xtb...")
-if not shutil.which("xtb"):
-    raise FileNotFoundError("xtb is not found in the PATH. Please install xtb and add it to the PATH.")
 
 def RESP(
         input_file,
