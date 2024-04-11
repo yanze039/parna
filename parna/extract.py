@@ -126,7 +126,10 @@ def extract_backbone(input_file, output_dir,
             break
         print(f"Extracting residue {i} ...")
         residue = pmd_mol.residues[i]
-        residue_template = pmd.modeller.residue.ResidueTemplate().from_residue(residue).to_structure()
+        _residue_template = pmd.modeller.residue.ResidueTemplate().from_residue(residue)
+        residue_template = _residue_template.to_structure()
+        tail = pmd.modeller.residue.ResidueTemplate().from_residue(residue).tail
+        head = pmd.modeller.residue.ResidueTemplate().from_residue(residue).head
         residue_name=residue.name+"_"+str(residue.number)
         canonical_residue=(residue.number not in noncanonical_residues)
         frame_info = extract_residue(residue_template, 
@@ -141,6 +144,15 @@ def extract_backbone(input_file, output_dir,
                 str(output_dir/f"{residue_name}_backbone.pdb"),
                 str(output_dir/f"N{i}_backbone.pdb")
             )
+        else:
+            if tail is not None:
+                tail_id = tail.idx
+                with open(output_dir/f"{residue_name}.tail", "w") as f:
+                    f.write(str(tail_id))
+            if head is not None:
+                head_id = head.idx
+                with open(output_dir/f"{residue_name}.head", "w") as f:
+                    f.write(str(head_id))
         if frame_info is None:
             continue
         

@@ -129,7 +129,7 @@ def build_backbone(
     return myStructure
 
 
-def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype=None):
+def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype=None, residue_tail_idx=None, template_tail_idx=None):
     logger.info(f"Building residue {residue_name} from {input_file} using template {template_residue}")
     rd_mol = rd_load_file(str(input_file), removeHs=False, atomtype=atomtype)
     if not "." in str(template_residue):
@@ -149,16 +149,33 @@ def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype
     # Not sanitize --> RuntimeError: Pre-condition Violation, RingInfo not initialized.
     Chem.SanitizeMol(rd_tmpl_block)
     atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True)
+    if residue_tail_idx is not None and template_tail_idx is not None:
+        for i in range(len(atom_mapping)):
+            atom_pair = atom_mapping[i]
+            if atom_pair[0] == template_tail_idx:
+                template_tail_partner_id = atom_pair[1]
+            if atom_pair[1] == residue_tail_idx:
+                residue_tail_partner_id = atom_pair[0]
+        if template_tail_partner_id != residue_tail_idx:
+            for i in range(len(atom_mapping)):
+                atom_pair = atom_mapping[i]
+                if atom_pair[0] == template_tail_idx:
+                    atom_mapping[i] = (template_tail_idx, residue_tail_idx)
+                if atom_pair[1] == residue_tail_idx:
+                    atom_mapping[i] = (residue_tail_partner_id, template_tail_partner_id)
+    
     logger.info("Atom mapping:")
     logger.info(atom_mapping)
     
     inverse_atom_mapping = [(j, i) for i, j in atom_mapping]
+
     rd_mol = flexible_align(
         rd_mol,
         rd_tmpl_block,
         atom_mapping=inverse_atom_mapping,
         force_constant=100.0,
     )
+
     # Find BUG: the atom names are not preserved from mol2. we use parmed to fix this.
     # pdbblock = Chem.MolToPDBBlock(rd_mol)
     pmd_mol = pmd.rdkit.load_rdkit(rd_mol)
@@ -293,7 +310,6 @@ def make_fragment(
         
     ):
     input_file = Path(input_file)
-    residue_name = residue_name
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True)
     
@@ -373,3 +389,56 @@ def replace_residue(oligo_pdb, residue_pdb, residue_id, output_file):
             f.write(
                 line[:6] + f"{idx+1:>5}" + line[11:]
             )
+
+
+def make_fragment_cap(
+        input_file,
+        residue_name,
+        output_dir
+    ):
+
+    input_file = Path(input_file)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True)
+    
+    amber_mol2_file = output_dir/f"{residue_name}._amber.mol2"
+    antechamber(
+        input_file=input_file, 
+        input_type="mol2", 
+        output=str(amber_mol2_file), 
+        atom_type="amber", 
+        residue_name=residue_name,
+    )
+
+    pmd_mol = pmd.load_file(str(amber_mol2_file))
+    pmd_mol.fix_charges()
+
+    OCH3_smarts = Chem.MolFromSmarts("PO[#6D4H3]")
+    rd_mol  = rd_load_file(str(input_file), removeHs=False, atomtype="amber")
+    OCH3_atoms = rd_mol.GetSubstructMatches(OCH3_smarts)
+    terminal_O = OCH3_atoms[0][1]
+    terminal_C = OCH3_atoms[0][2]
+    CH3_Hs = []
+    neighbors = rd_mol.GetAtoms()[terminal_C].GetNeighbors()
+    for neighbor in neighbors:
+        if neighbor.GetAtomicNum() == 1:
+            CH3_Hs.append(neighbor.GetIdx())
+
+    atom_delete = []
+    for atom in pmd_mol.atoms:
+        if atom.idx in CH3_Hs:
+            atom_delete.append(atom)
+        else:
+            pass
+    atom_delete.append(pmd_mol.atoms[terminal_C])
+    new_tail = pmd_mol.atoms[terminal_O]
+
+    for atom in atom_delete:
+        pmd_mol.delete_atom(atom)
+
+    pmd_mol.tail = new_tail
+    pmd_mol.save(str(output_dir/f"{residue_name}.mol2"), overwrite=True)
+    pmd_mol.save(str(output_dir/f"{residue_name}.lib"), overwrite=True)
+
+
+
