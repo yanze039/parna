@@ -3,7 +3,7 @@ from pathlib import Path
 from rdkit.Chem import rdMolTransforms
 import os
 from parna.utils import rd_load_file, atomName_to_index, map_atoms
-from parna.xtb import write_xtb_input, xtb
+from parna.qm.xtb import write_xtb_input, xtb
 from parna.logger import getLogger
 
 logger = getLogger(__name__)
@@ -60,7 +60,6 @@ def gen_conformer(query_file, scan_steps=6, charge=0, output_dir="conformers", s
     template_dir = Path(__file__).parent.parent/"template"
     template_file = template_dir/"sugar_template.pdb"
     query_file = Path(query_file)
-    scan_steps = scan_steps
     charge = charge
     output_dir = Path(output_dir)
     if not output_dir.exists():
@@ -151,9 +150,14 @@ def gen_conformer(query_file, scan_steps=6, charge=0, output_dir="conformers", s
     logger.info("Spliting xtb output...")
     if not os.path.exists(output_dir/"xtbscan.log"):
         raise FileNotFoundError("xtbscan.log not found")
-    split_xyz_file(
-        output_dir/"xtbscan.log", output_folder=output_dir
-    )
+    if scan_steps == 1:
+        split_xyz_file(
+            output_dir/"xtbscan.log", output_folder=output_dir
+        )
+    else:
+        split_xyz_file(
+            output_dir/"xtbscan.log", output_folder=output_dir
+        )
     logger.info("Done!")
 
 

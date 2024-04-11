@@ -1,8 +1,6 @@
 import parmed as pmd
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import rdFMCS, rdDetermineBonds
-from collections import Counter
 from pathlib import Path
 import os
 import shutil
@@ -161,7 +159,7 @@ def getEquivalenceConstraints(query):
         "Stage2": equal_H_CH2 + equal_H_CH3
     }
 
-def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0.1):
+def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0.1, wfn_file_type="molden"):
 
     constraint_types = {
         "OH5": {
@@ -177,7 +175,7 @@ def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0
     input_file = Path(input_file)
     output_dir = Path(output_dir)
     wfn_dir = Path(wfn_directory)
-    fchk_files = list(wfn_dir.glob("*.fchk"))
+    fchk_files = list(wfn_dir.glob(f"*.{wfn_file_type}"))
     conf_list_txt = output_dir/"conformers_list.txt"
     sugar_template_file = Path(__file__).parent.parent/"template/sugar_template.pdb"
     n_conf = len(fchk_files)
