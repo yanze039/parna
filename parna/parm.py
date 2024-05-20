@@ -182,18 +182,19 @@ def alchemical_parameterize(oligoFile1, oligoFile2, proteinFile=None, external_l
             logger.info("Atomtype check passed")
 
 
-def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_forcefield="gaff2", parm_set="parm10", atom_type="amber"):   
-    if not Path(input_file).suffix == ".mol2":
-        _mol2_file = Path(input_file).parent / (Path(input_file).stem + ".mol2")
+def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_forcefield="gaff2", parm_set="parm10", atom_type="amber", sinitize=False):   
+    if (not Path(input_file).suffix == ".mol2") or sinitize:
+        _mol2_file = Path(input_file).parent / (Path(input_file).stem + ".tmp.mol2")
         command_antechamber = [
             "antechamber",
-            "-fi", "pdb",
+            "-fi", Path(input_file).suffix[1:],
             "-i", str(input_file),
             "-fo", "mol2",
             "-o", str(_mol2_file),
             "-at", atom_type,
             "-pf", "y"
         ]
+        print("here")
         logger.info(" ".join(command_antechamber))
         os.system(" ".join(command_antechamber))
     else:

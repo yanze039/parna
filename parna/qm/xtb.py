@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from parna.utils import getStringlist
 from parna.logger import getLogger
+import os
 
 logger = getLogger(__name__)
 
@@ -14,6 +15,10 @@ if not shutil.which("xtb"):
 
 
 def write_xtb_input(dihedral_atoms, dihedral_angles, scan_atoms, scan_type="dihedral", scan_start=0, scan_end=288, scan_steps=5, force_constant=0.05):
+    """ Write xtb input file for dihedral scan.
+        Input:
+            dihedral_atoms: list of tuples, each tuple is a dihedral atom index
+    """
     contents = ["$constrain"]
     contents.append("force constant={}".format(str(force_constant)))
     for idx, diha in enumerate(dihedral_atoms):
@@ -32,21 +37,30 @@ def write_xtb_input(dihedral_atoms, dihedral_angles, scan_atoms, scan_type="dihe
     return "\n".join(contents)
 
 
-def xtb(coord, inp, charge, workdir):
+def xtb(coord, inp, charge, workdir, solution="h2o", opt=True):
     workdir = Path(workdir)
     coord = Path(coord)
     inp = Path(inp)
     xtbcommand = [
-        "xtb", str(coord.resolve()), "--input", str(inp.resolve()), "--chrg", str(charge), "--opt",
-        "--gbsa", "h2o"
+        "xtb", str(coord.resolve()),  "--chrg", str(charge),"--input", str(inp.resolve()),
     ]
+    if opt:
+        xtbcommand.append("--opt")
+    if solution is not None:
+        xtbcommand.append("--gbsa")
+        xtbcommand.append(solution)
     logger.info("Running xtb...")
     if not workdir.exists():
         workdir.mkdir(exist_ok=True)
     with open(workdir/"xtb.out", "w") as f:
         logger.info("Executing Command: " + " ".join(xtbcommand))
-        subprocess.run(xtbcommand, stdout=f, stderr=f, cwd=str(workdir))
-    logger.info("xtb Done.")
+        result = subprocess.run(xtbcommand, stdout=f, stderr=f, cwd=str(workdir))
+    if result.returncode != 0:
+        logger.error("xtb failed.")
+        logger.error("Please check the output file: " + str(workdir/"xtb.out"))
+        raise RuntimeError("xtb failed.")
+    else:
+        logger.info("xtb Done.")
 
 
 def structure_optimization(pdbfile, restrain_atom_list, charge, workdir="xtb"):
@@ -67,3 +81,88 @@ def structure_optimization(pdbfile, restrain_atom_list, charge, workdir="xtb"):
         charge=charge,
         workdir=workdir
     )
+
+
+class XTB:
+    def __init__(
+        self, 
+        force_constant: float = 0.05
+    ):
+        self.ops = []
+        self.constraint = False
+        self.constraint_list = []
+        self.scan = False
+        self.force_constant = force_constant
+        self.scan_list = []
+    
+    def clear(self):
+        self.ops = []
+        self.constraint = False
+        self.constraint_list = []
+        self.scan = False
+        self.scan_list = []
+        
+    def add(self, op):
+        self.ops.append(op)
+    
+    def set_force_constant(self, force_constant):
+        self.force_constant = force_constant
+    
+    def add_constraint(self, constraint_type: str, atoms, at, force_constant=0.05):
+        self.constraint = True
+        self.set_force_constant(force_constant)
+        self.constraint_list.append((constraint_type, atoms, at))
+    
+    def set_scan(self, scan_type, atoms, start, end, steps):
+        self.scan = True
+        self.scan_list.append((scan_type, atoms, start, end, steps))
+    
+    def write_constraint(self):
+        contents = ["$constrain"]
+        contents.append("force constant={}".format(str(self.force_constant)))
+        for c in self.constraint_list:
+            contents.append("{}: {},{}".format(c[0], ",".join(getStringlist([a+1 for a in c[1]])), str(c[2])))
+        return "\n".join(contents)
+
+    def write_scan(self):
+        contents = ["$scan"]
+        for s in self.scan_list:
+            contents.append("{}: {},{};{},{},{}".format(
+                s[0], 
+                ",".join(getStringlist([a+1 for a in s[1]])),
+                np.round(s[2], 2),
+                np.round(s[2], 2),
+                np.round(s[3], 2),
+                int(s[4])
+            ))
+        return "\n".join(contents)
+    
+    def generate_input(self):
+        contents = []
+        if self.constraint:
+            contents.append(self.write_constraint())
+        if self.scan:
+            contents.append(self.write_scan())
+        contents.append("$end")
+        return "\n".join(contents)
+
+    def write_input(self, filename):
+        with open(filename, "w") as f:
+            f.write(self.generate_input())
+    
+    def run(self, coord: str, charge: int, workdir, inp_name:str="xtb.inp"):
+        workdir = Path(workdir)
+        coord = Path(coord)
+        inp = workdir/inp_name
+        self.write_input(inp)
+        xtb(
+            coord=coord,
+            inp=inp,
+            charge=charge,
+            workdir=workdir
+        )
+        return workdir/"xtb.out"
+    
+    
+        
+        
