@@ -47,11 +47,12 @@ def atomName_to_index(mol):
     return atomName_to_index
 
 
-def map_atoms(template, query, ringMatchesRingOnly=False, bondCompare=rdFMCS.BondCompare.CompareAny):
+def map_atoms(template, query, ringMatchesRingOnly=False, bondCompare=rdFMCS.BondCompare.CompareAny, completeRingsOnly=False):
     mcs = rdFMCS.FindMCS(
             [template, query], 
             ringMatchesRingOnly=ringMatchesRingOnly,  # PDB doesn't have ring information
-         bondCompare=bondCompare  # PDB doesn't have bond order
+         bondCompare=bondCompare,  # PDB doesn't have bond order,
+         completeRingsOnly=completeRingsOnly
     )
     patt = Chem.MolFromSmarts(mcs.smartsString)
     template_Match = template.GetSubstructMatch(patt)
@@ -113,3 +114,41 @@ def remove_ter(pdbFile, outFile):
         for line in lines:
             if not line.startswith("TER"):
                 f.write(line)
+
+def merge_list(list1, list2):
+    return list(set(list1).union(set(list2)))
+
+
+
+def split_xyz_file(input_file_path, output_folder, output_prefix="conformer"):
+    """
+    Split a multi-conformer XYZ file into individual XYZ files.
+
+    Parameters:
+    - input_file_path (str): Path to the multi-conformer XYZ file.
+    - output_folder (str): Folder where individual XYZ files will be saved.
+
+    Returns:
+    - None
+    """
+    # Read the content of the multi-conformer XYZ file
+    with open(input_file_path, 'r') as multi_xyz_file:
+        lines = multi_xyz_file.readlines()
+
+    # Find the number of conformers
+    block_length = int(lines[0].strip()) + 2
+    num_conformers = len(lines) // block_length
+
+    # Iterate over conformers and create individual XYZ files
+    for conformer_index in range(num_conformers):
+        # Extract the data for the current conformer
+        start_index = (conformer_index) * block_length
+        end_index = start_index + block_length
+        conformer_data = lines[start_index:end_index]
+
+        # Generate the output file path for the current conformer
+        output_file_path = f"{output_folder}/{output_prefix}_{conformer_index}.xyz"
+
+        # Write the conformer data to the individual XYZ file
+        with open(output_file_path, 'w') as individual_xyz_file:
+            individual_xyz_file.writelines(conformer_data)
