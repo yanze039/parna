@@ -63,13 +63,17 @@ def xtb(coord, inp, charge, workdir, solution="h2o", opt=True):
         logger.info("xtb Done.")
 
 
-def structure_optimization(pdbfile, restrain_atom_list, charge, workdir="xtb"):
-    atom_string = ",".join([str(i) for i in restrain_atom_list])
-    opt_inp = [
-    "$fix",
-    f"atoms: {atom_string}",
-    "$end"
-    ]
+def structure_optimization(pdbfile, charge, restrain_atom_list=None, workdir="xtb"):
+    
+    if restrain_atom_list is None:
+        atom_string = ",".join([str(i) for i in restrain_atom_list])
+        opt_inp = [
+        "$fix",
+        f"atoms: {atom_string}",
+        "$end"
+        ]
+    else:
+        opt_inp = []
     workdir = Path(workdir)
     if not workdir.exists():
         workdir.mkdir(exist_ok=True)
@@ -81,6 +85,25 @@ def structure_optimization(pdbfile, restrain_atom_list, charge, workdir="xtb"):
         charge=charge,
         workdir=workdir
     )
+    
+
+def gen_multi_conformations(input_file, charge, work_dir, ewin=6, threads=48):
+    print(" ".join(["xtb", str(input_file), "--opt", "--gbsa", "h2o"]))
+    subprocess.run(
+        ["xtb", str(Path(input_file).resolve()), "--opt", "--gbsa", "h2o"],
+        cwd=work_dir,
+    )
+    subprocess.run(
+        [
+            "crest", 
+            "xtbopt." + input_file.split(".")[-1],
+            "-T", str(threads),
+            "-g", "water", "-chrg", str(charge),
+            "-ewin", str(ewin), "squick"
+        ],
+        cwd=work_dir,
+    )
+    return  
 
 
 class XTB:
@@ -150,7 +173,7 @@ class XTB:
         with open(filename, "w") as f:
             f.write(self.generate_input())
     
-    def run(self, coord: str, charge: int, workdir, inp_name:str="xtb.inp"):
+    def run(self, coord: str, charge: int, workdir, opt=True, inp_name:str="xtb.inp"):
         workdir = Path(workdir)
         coord = Path(coord)
         inp = workdir/inp_name
@@ -159,7 +182,8 @@ class XTB:
             coord=coord,
             inp=inp,
             charge=charge,
-            workdir=workdir
+            workdir=workdir,
+            opt=opt
         )
         return workdir/"xtb.out"
     

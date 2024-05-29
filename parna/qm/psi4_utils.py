@@ -293,4 +293,11 @@ def calculate_energy_shell(input_file,
     print(code)
 
 
-
+def read_energy_from_log(log_file: str) -> float:
+    with open(log_file, 'r') as f:
+        lines = f.readlines()
+    for line in lines:
+        if "Final Energy:" in line:
+            energy = float(line.split()[-1])
+            return energy
+    return None
