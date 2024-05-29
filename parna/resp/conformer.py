@@ -57,6 +57,9 @@ def split_xyz_file(input_file_path, output_folder, output_prefix="conformer"):
     
 
 def gen_conformer(query_file, scan_steps=6, charge=0, output_dir="conformers", skip_constraint=None):
+    """
+    Generate conformers by dihedral scanning.
+    """
     template_dir = Path(__file__).parent.parent/"template"
     template_file = template_dir/"sugar_template.pdb"
     query_file = Path(query_file)
@@ -159,6 +162,7 @@ def gen_conformer(query_file, scan_steps=6, charge=0, output_dir="conformers", s
             output_dir/"xtbscan.log", output_folder=output_dir
         )
     logger.info("Done!")
+
 
 
 if __name__ == "__main__":

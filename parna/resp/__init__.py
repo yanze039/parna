@@ -2,10 +2,11 @@ from parna.resp.conformer import gen_conformer
 from parna.qm import calculate_energy
 from parna.resp.fitting import fit_charges
 from parna.resp.cap import fit_charges_cap
+from parna.resp.frag import fit_charges_frag
 from pathlib import Path
 from parna.logger import getLogger
-from parna.qm.xtb import structure_optimization
-from parna.utils import map_atoms, rd_load_file
+from parna.qm.xtb import structure_optimization, gen_multi_conformations
+from parna.utils import map_atoms, rd_load_file, split_xyz_file
 import os
 
 logger = getLogger(__name__)
@@ -93,7 +94,7 @@ def RESP_cap(
         if atomic_number != 1:  # only add heavy atoms
             restrained_atom_list.append(atom_pair[1]+1)
     # opt hydrogens and new groups.
-    structure_optimization(input_file, restrained_atom_list, charge, workdir=str(output_dir))
+    structure_optimization(input_file, charge, restrained_atom_list, workdir=str(output_dir))
     
     conf_file = str(output_dir/f"xtbopt.pdb")
     calculate_energy(
@@ -115,4 +116,60 @@ def RESP_cap(
     os.rename(output_dir/f"xtbopt.0.100.mol2", output_dir/f"{Path(input_file).stem}.mol2")
 
 
+import numpy as np
 
+def RESP_fragment(
+        input_file,
+        charge,
+        output_dir,
+        residue_name,
+        memory="160 GB", 
+        n_threads=48, 
+        method_basis="HF/6-31G*",
+        n_conformers=6
+    ):
+    logger.info(f"Generating conformers for {input_file}...")
+    output_dir = Path(output_dir)  
+    
+    gen_multi_conformations(
+        input_file, 
+        charge, 
+        output_dir, 
+        ewin=6, 
+        threads=48
+    )
+    xtb_energies = np.loadtxt(output_dir/"crest.energies")
+    n_xtb_conf = len(xtb_energies)
+    if n_xtb_conf <= n_conformers:
+        n_conformers = n_xtb_conf
+        every_frame = 1
+    else:
+        every_frame = n_xtb_conf//n_conformers
+    
+    split_xyz_file(
+        output_dir/"crest_conformers.xyz", 
+        output_folder=output_dir, 
+        every_frame=every_frame
+    )
+    
+    conformers = list(output_dir.glob("conformer_*.xyz"))
+    
+    for conformer_file in conformers:
+        calculate_energy(
+            conformer_file,
+            str(output_dir), 
+            charge=charge, 
+            memory=memory,
+            n_threads=n_threads,
+            method_basis=method_basis
+        )
+
+    fit_charges_frag(
+        input_file=input_file,
+        wfn_directory=str(output_dir), 
+        output_dir=str(output_dir), 
+        residue_name=residue_name, 
+        tightness=0.1,
+        wfn_file_type="fchk"
+    )
+    return None
