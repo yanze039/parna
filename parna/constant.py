@@ -1,0 +1,5 @@
+EV2kJPerMol = 0.073498618
+Hatree2kJPerMol = 2625.499638
+Hatree2kCalPerMol = 627.509474
+kJ2kCal = 0.239005736
+kCal2kJ = 4.184
