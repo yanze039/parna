@@ -8,6 +8,16 @@ import numpy as np
 import yaml
 
 
+SLURM_HEADER_CPU = """#!/bin/bash
+source /etc/profile
+module load anaconda/2023a
+source activate mdtools
+source $HOME/env/multiwfn.env
+source $HOME/env/xtb.env
+source $HOME/env/orca.env
+\n
+"""
+
 def rd_load_file(
         infile, 
         charge=None, 
@@ -33,6 +43,9 @@ def rd_load_file(
             mol = Chem.MolFromMol2File(str(infile), removeHs=removeHs, sanitize=sanitize)
     elif infile.suffix == ".xyz":
         mol = Chem.MolFromXYZFile(str(infile))
+    elif infile.suffix == ".sdf":
+        suppl = Chem.SDMolSupplier(str(infile), removeHs=removeHs, sanitize=sanitize)
+        mol = suppl[0]
     else:
         raise ValueError("The input file is not a pdb file")
     if determine_bond_order:
@@ -120,7 +133,7 @@ def merge_list(list1, list2):
 
 
 
-def split_xyz_file(input_file_path, output_folder, output_prefix="conformer"):
+def split_xyz_file(input_file_path, output_folder, every_frame=1, output_prefix="conformer"):
     """
     Split a multi-conformer XYZ file into individual XYZ files.
 
@@ -138,10 +151,12 @@ def split_xyz_file(input_file_path, output_folder, output_prefix="conformer"):
     # Find the number of conformers
     block_length = int(lines[0].strip()) + 2
     num_conformers = len(lines) // block_length
-
+    
+    num_conformers = num_conformers // every_frame
     # Iterate over conformers and create individual XYZ files
-    for conformer_index in range(num_conformers):
+    for _conformer_index in range(num_conformers):
         # Extract the data for the current conformer
+        conformer_index = _conformer_index * every_frame
         start_index = (conformer_index) * block_length
         end_index = start_index + block_length
         conformer_data = lines[start_index:end_index]
@@ -152,3 +167,5 @@ def split_xyz_file(input_file_path, output_folder, output_prefix="conformer"):
         # Write the conformer data to the individual XYZ file
         with open(output_file_path, 'w') as individual_xyz_file:
             individual_xyz_file.writelines(conformer_data)
+
+
