@@ -2,3 +2,4 @@ rdkit
 parmed
 psi4
 numpy
+torch
