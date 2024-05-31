@@ -31,9 +31,10 @@ def RESP(
         scan_steps=n_conformers,
         charge=charge,
         output_dir=output_dir,
-        skip_constraint=skip_constraint
+        skip_constraint=skip_constraint,
+        prefix="resp_conformer"
     )
-    conformer_files = list(Path(output_dir).glob("conformer_*.xyz"))
+    conformer_files = list(Path(output_dir).glob("resp_conformer_*.xyz"))
     for conformer_file in conformer_files:
         logger.info(f"Calculating energy for {conformer_file}")
         calculate_energy(
@@ -149,10 +150,11 @@ def RESP_fragment(
     split_xyz_file(
         output_dir/"crest_conformers.xyz", 
         output_folder=output_dir, 
-        every_frame=every_frame
+        every_frame=every_frame,
+        output_prefix="resp_conformer"
     )
     
-    conformers = list(output_dir.glob("conformer_*.xyz"))
+    conformers = list(output_dir.glob("resp_conformer_*.xyz"))
     
     for conformer_file in conformers:
         calculate_energy(

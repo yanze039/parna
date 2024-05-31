@@ -56,7 +56,7 @@ def split_xyz_file(input_file_path, output_folder, output_prefix="conformer"):
             individual_xyz_file.writelines(conformer_data)
     
 
-def gen_conformer(query_file, scan_steps=6, charge=0, output_dir="conformers", skip_constraint=None):
+def gen_conformer(query_file, scan_steps=6, charge=0, output_dir="conformers", skip_constraint=None, prefix="conformer"):
     """
     Generate conformers by dihedral scanning.
     """
@@ -155,11 +155,11 @@ def gen_conformer(query_file, scan_steps=6, charge=0, output_dir="conformers", s
         raise FileNotFoundError("xtbscan.log not found")
     if scan_steps == 1:
         split_xyz_file(
-            output_dir/"xtbscan.log", output_folder=output_dir
+            output_dir/"xtbscan.log", output_folder=output_dir, output_prefix=prefix
         )
     else:
         split_xyz_file(
-            output_dir/"xtbscan.log", output_folder=output_dir
+            output_dir/"xtbscan.log", output_folder=output_dir, output_prefix=prefix
         )
     logger.info("Done!")
 
