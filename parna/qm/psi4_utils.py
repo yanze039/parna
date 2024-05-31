@@ -91,7 +91,7 @@ def calculate_energy_function(input_file,
     inFile = Path(input_file)
     if not output_dir.exists():
         os.makedirs(output_dir, exist_ok=True)
-    psi4log = output_dir/f"{inFile.stem}.psi4.HF.log"
+    psi4log = output_dir/f"{inFile.stem}.psi4.log"
     psi4tmp_dir = output_dir/"tmp"
     psi4.set_memory(memory)
     psi4.set_num_threads(n_threads)
@@ -256,7 +256,7 @@ def calculate_energy_shell(input_file,
     inFile = Path(input_file)
     if not output_dir.exists():
         os.makedirs(output_dir, exist_ok=True)
-    psi4log = output_dir/f"{inFile.stem}.psi4.HF.log"
+    psi4log = output_dir/f"{inFile.stem}.psi4.log"
     psi4tmp_dir = output_dir/"tmp"
     if not os.path.exists(psi4tmp_dir):
         os.makedirs(psi4tmp_dir, exist_ok=True)
