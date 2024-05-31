@@ -1,6 +1,8 @@
 import rdkit.Chem as Chem
 import rdkit.Chem.AllChem as AllChem
 import numpy as np
+import parmed as pmd
+import os
 from parna.utils import merge_list, flatten_list, map_atoms, inverse_mapping, rd_load_file
 from parna.logger import getLogger
 from typing import Tuple, Union, List
@@ -37,9 +39,10 @@ FUNCTIONAL_GROUPS = {
 
 TERMINAL_HYDROGENS = {
     'hydroxyl': '[OX2H]',
-    'amine': '[NX3H]',
+    'amine': '[NX3H2]',
     'thiol': '[SX2H]',
     'methyl': '[CX4H3]',
+    'amine+': '[NX4H3]',
 }
 
 
@@ -83,12 +86,20 @@ class Fragment:
             writer.close()
         elif format == "pdb":
             mol_file = output_dir/"fragment.pdb"
-            Chem.MolToPDBFile(self.mol, str(mol_file))
+            tmp_mol_file = output_dir/"fragment.tmp.sdf"
+            writer = Chem.SDWriter(str(tmp_mol_file))
+            writer.write(self.mol)
+            writer.close()
+            pmd_mol = pmd.load_file(str(tmp_mol_file))[0]
+            pmd_mol.residues[0].name = "MOL"
+            pmd_mol.write_pdb(str(mol_file), use_hetatoms=False)
+            os.remove(tmp_mol_file)
+            # Chem.MolToPDBFile(self.mol, str(mol_file), flavor=10)  # do not write CONECT records
         else:
             raise ValueError("Format not supported.")
         with open(output_dir/"fragment.yaml", "w") as f:
             yaml.dump({
-                "mol_file": (output_dir/"fragment.sdf").resolve(),
+                "mol_file": mol_file.resolve(),
                 "rotatable_bond": self.rotatable_bond,
                 "dihedral_quartets": self.dihedral_quartets,
                 "fragment_parent_mapping": self.fragment_parent_mapping,
@@ -133,7 +144,6 @@ class TorsionFragmentizer:
                 self.terminal_matches.extend(list(matches))
         self.terminal_matches = flatten_list(self.terminal_matches)
         self.non_14_hydrogen = non_14_hydrogen
-        # self.fragments = []
         
     def get_sssr(self):
         return self.sssr

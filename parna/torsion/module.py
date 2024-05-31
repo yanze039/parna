@@ -1,6 +1,8 @@
-from . import TorsionOptimizer, TorsionFragmentizer, DihedralScanner
-from parna.utils import rd_load_file, map_atoms, SLURM_HEADER_CPU
-from parna.constants import Hatree2kCalPerMol
+from .optim import TorsionOptimizer
+from .fragment import TorsionFragmentizer
+from .conf import DihedralScanner
+from parna.utils import rd_load_file, map_atoms, SLURM_HEADER_CPU, atomName_to_index
+from parna.constant import Hatree2kCalPerMol
 from parna.qm.psi4_utils import read_energy_from_log
 from parna.parm import parameterize, generate_frcmod
 from parna.resp import RESP_fragment
@@ -10,6 +12,7 @@ import openmm as mm
 import openmm.app as app
 from pathlib import Path
 import numpy as np
+import rdkit.Chem as Chem
 import os
 import yaml
 
@@ -88,6 +91,8 @@ class MoleculeFactory:
             sinitize=False
         )
         mol2_pmd = pmd.load_file(str(tmp_mol2))
+        print(mol2_pmd)
+        print(str(tmp_mol2))
         for atom in mol2_pmd.atoms:
             atom.charge = 0.0
         tmp_lib = (output_dir/f"{pdb_file.stem}.tmp.lib")
@@ -144,8 +149,10 @@ class TorsionFactory(MoleculeFactory):
             resp_n_conformers=resp_n_conformers,
             output_dir=output_dir
         )
-        self.optimizer = TorsionOptimizer(order, panelty_weight, threshold)
-        self.fragmentizer = TorsionFragmentizer()
+        self.order = order
+        self.panelty_weight = panelty_weight
+        self.threshold = threshold
+        
         self.mol = None
         if template in ["A", "U", "G", "C"]:
             self.template_file = TEMPLATE_DIR / f"NA_{template}.pdb"
@@ -155,6 +162,10 @@ class TorsionFactory(MoleculeFactory):
             self.template_file = None
         if self.template_file is not None:
             self.template_mol = rd_load_file(self.template_file)
+        
+        self.sugar_template_file = str(TEMPLATE_DIR/"sugar_template.pdb")
+        self.sugar_template_mol = Chem.MolFromPDBFile(str(self.sugar_template_file), removeHs=False)
+        
         self.scanning_steps = scanning_steps
         self.start = -180
         self.end = 180
@@ -162,6 +173,13 @@ class TorsionFactory(MoleculeFactory):
         self.method = method
     
     def load_file(self, filename, charge=None):
+        """
+        Load a molecule from a file.
+        Input: 
+            filename: str, path to the file. Supported formats are `PDB`, `XYZ`, `SDF`
+                    if `PDB` or `XYZ` file is provided, charge must be provided.
+            charge: int, charge of the molecule
+        """
         file_path = Path(filename)
         if file_path.suffix in [".pdb", '.xyz'] and charge is None:
             logger.error("Please provide charge for pdb or xyz file")
@@ -171,22 +189,36 @@ class TorsionFactory(MoleculeFactory):
         else:
             determine_bond_order = False
         self.mol = rd_load_file(file_path, removeHs=False, sanitize=True, charge=charge, determine_bond_order=determine_bond_order)
+        
+    def match_template(self):
+        self.core_atoms = map_atoms(self.template_mol, self.mol, ringMatchesRingOnly=False, completeRingsOnly=False)
+        self.sugar_fragment_mapping = map_atoms(self.sugar_template_mol, self.mol, ringMatchesRingOnly=False, completeRingsOnly=False)
+        sugar_name_to_index = atomName_to_index(self.sugar_template_mol)
+        C1_index = sugar_name_to_index["C1'"]
+        mapping_dict = {}
+        for atom in self.sugar_fragment_mapping:
+            mapping_dict[atom[0]] = atom[1]
+        self.sugar_fragment_mapping = mapping_dict
+        self.C1_index_parent = self.sugar_fragment_mapping[C1_index]
     
     def fragmentize(self, output_dir):
-        core_atoms = map_atoms(self.template_mol, self.mol, ringMatchesRingOnly=False, completeRingsOnly=False)
+        self.match_template()
         n_atom_mod = self.mol.GetNumAtoms()
-        unique_atoms = [i for i in range(n_atom_mod) if i not in [a[1] for a in core_atoms]]
+        unique_atoms = [i for i in range(n_atom_mod) if i not in [a[1] for a in self.core_atoms]]
         TF = TorsionFragmentizer(self.mol)
         TF.fragmentize()
         self.valid_fragments = {}
         for idx, frag in enumerate(TF.fragments):
             dq = frag.pivotal_dihedral_quartet[0]
-            if (np.any([frag.fragment_parent_mapping[a] in unique_atoms for a in dq])):
+            if (np.any([frag.fragment_parent_mapping[a] in unique_atoms for a in dq])) or \
+                        self.C1_index_parent in [frag.fragment_parent_mapping[a] for a in frag.rotatable_bond]:
                 frag.save(str(output_dir/f"fragment{idx}"), format="pdb")
+                logger.info(f"Rotatable bond: {frag.rotatable_bond} is valid for fragment {idx}. Parent image: {[frag.fragment_parent_mapping[a] for a in frag.rotatable_bond]}")
                 logger.info(f"Fragment {idx} is saved to {str(output_dir/f'fragment{idx}')}")
                 self.valid_fragments[idx] = frag
+        logger.debug(f"Valid fragments: {self.valid_fragments}")
                 
-    def gen(self, submit=False, local=False):
+    def gen(self, submit=False, local=False, overwrite=False):
         output_dir = Path(self.output_dir)
         logger.info(f" >>> Output directory: {output_dir} <<<")
         self.fragmentize(output_dir)
@@ -199,39 +231,60 @@ class TorsionFactory(MoleculeFactory):
                 dihedrals=[vfrag.pivotal_dihedral_quartet[0]],
                 charge=0,
                 workdir=output_dir/f"fragment{vi}",
-            )
-
+                conformer_prefix=f"frag_conformer",
+            ) 
             dsc.run(
                 start=self.start,
                 end=self.end + (360/self.scanning_steps)*(self.scanning_steps-1),
-                steps=self.scanning_steps
+                steps=self.scanning_steps,
+                overwrite=overwrite
             )
             self.all_conformer_files[vi] = dsc.conformers[vfrag.pivotal_dihedral_quartet[0]]
         
             for idx, conf in enumerate(dsc.conformers[vfrag.pivotal_dihedral_quartet[0]]):
-                slurm_file = output_dir/f"fragment{vi}/conf{idx}.slurm"
+                slurm_file = (output_dir/f"fragment{vi}/conf{idx}.slurm").resolve()
                 if vfrag.charge != 0:
                     logger.warning(f"Fragment {vi} has charge {vfrag.charge}")
                     logger.warning(f"Please use appropriate QM methods for charged fragments")
-                self.write_slurm(
+                self.write_script(
                     slurm_filename=slurm_file,
                     input_file=str(conf),
-                    output_dir=output_dir/f"fragment{vi}",
-                    charge=vfrag.charge
+                    output_dir=(output_dir/f"fragment{vi}").resolve(),
+                    charge=vfrag.charge,
+                    local=local
                 )
+                self.slurm_files.append(slurm_file)
+                if not overwrite and os.path.exists(conf.with_suffix(".psi4.log")):
+                    continue
+                    
                 if local:
                     cwd = Path.cwd().resolve()
                     os.chdir(output_dir)
+                    logger.info(f"Running {slurm_file}")
                     os.system(f"bash {slurm_file}")
                     os.chdir(cwd)
                 elif submit:
                     cwd = Path.cwd().resolve()
                     os.chdir(output_dir)
+                    logger.info(f"Submiting {slurm_file}")
                     os.system(f"LLsub {slurm_file}")
                     os.chdir(cwd)
-                self.slurm_files.append(slurm_file)
+                
         
-    def optimize(self):
+    def optimize(self, overwrite=False):
+        """
+        Optimize the torsion parameters for the molecule.
+        Input:
+            overwrite: bool, if True, overwrite the existing files.
+        Output:
+            Save the conformer data and parameter set to the output directory.
+        
+        Description:
+            1. Calculate atomic charges for each fragment.
+            2. Parameterize each fragment.
+            3. Collect QM and MM energies for each conformer.
+            4. Optimize the torsion parameters.
+        """
         output_dir = Path(self.output_dir)
         self.conformer_data = {}
         self.parameter_set = {}
@@ -240,68 +293,85 @@ class TorsionFactory(MoleculeFactory):
             logger.info(f"Optimizing fragment {vi}")
             logger.info(f"calculating atomic charges for fragment {vi}")
             frag_dir = Path(output_dir/f"fragment{vi}")
-            self.charge_molecule(
-                self.all_conformer_files[vi][0], 
-                vfrag.charge, frag_dir
-            )
+            # get atomic charges
             charged_mol2 = frag_dir/f"{self.all_conformer_files[vi][0].stem}.mol2"
-            charged_pmd_mol = pmd.load_file(charged_mol2)
+            if overwrite or (not os.path.exists(charged_mol2)):
+                self.charge_molecule(
+                    self.all_conformer_files[vi][0], 
+                    vfrag.charge, frag_dir
+                )
+            else:
+                logger.info(f"File exised, using existing charge file {charged_mol2}.")
+            charged_pmd_mol = pmd.load_file(str(charged_mol2))
             logger.info("Parameterizing fragment")
-            self.parameterize(str(output_dir/f"fragment{vi}/fragment.pdb"), frag_dir)
             parm7 = frag_dir/f"{self.mol_name}.parm7"
-            parm_mol = pmd.load_file(parm7)
+            if overwrite or (not os.path.exists(parm7)):
+                self.parameterize(str(output_dir/f"fragment{vi}/fragment.pdb"), frag_dir)
+            else:
+                logger.info(f"File exised, using existing parameter file {parm7}.")
+            parm_mol = pmd.load_file(str(parm7))
             for idx, atom in enumerate(parm_mol.atoms):
                 atom.charge = charged_pmd_mol.atoms[idx].charge
             dih_idx = self.get_dihrdeal_term_by_quartet(parm_mol, vfrag.pivotal_dihedral_quartet[0])
             parm_mol.dihedrals[dih_idx].type.phi_k = 0.0
             logger.info(f'collecting QM and MM Energies for fragment {vi}')
+            dihedrals = []
+            mm_energies = []
+            qm_energies = []
+            conf_names = []
             for conf in self.all_conformer_files[vi]:
                 conf_mol = rd_load_file(str(conf))
                 positions = np.array(conf_mol.GetConformer().GetPositions()) / 10.
                 mm_energy_dict = self.calculate_mm_energy(parm_mol, positions)
                 parm_mol.positions = positions
-                log_file = conf.with_suffix(".psi4.HF.log")
+                log_file = conf.with_suffix(".psi4.log")
                 qm_energy = read_energy_from_log(log_file)
-                self.conformer_data[vi][conf.stem] = {
-                    "dihedral": parm_mol.dihedrals[dih_idx].measure(),
-                    "mm_energy": mm_energy_dict["total"],
-                    "qm_energy": qm_energy * Hatree2kCalPerMol
-                    
-                }
+                dihedrals.append(float(parm_mol.dihedrals[dih_idx].measure() / 180.0 * np.pi))
+                mm_energies.append(mm_energy_dict["total"])
+                qm_energies.append(qm_energy * Hatree2kCalPerMol)
+                conf_names.append(conf.stem)
 
-            dihedrals = np.array([self.conformer_data[vi][conf.stem]["dihedral"] for conf in self.all_conformer_files[vi]])
-            mm_energy = np.array([self.conformer_data[vi][conf.stem]["mm_energy"] for conf in self.all_conformer_files[vi]])
-            qm_energy = np.array([self.conformer_data[vi][conf.stem]["qm_energy"] for conf in self.all_conformer_files[vi]])
+            dihedrals = np.array(dihedrals)
+            mm_energy = np.array(mm_energies)
+            qm_energy = np.array(qm_energies)
             mm_energy = mm_energy - mm_energy.min()
             qm_energy = qm_energy - qm_energy.min()
-            self.optimizer.infer_parameters(
+            for idx, conf_name in enumerate(conf_names):
+                self.conformer_data[vi][conf_name] = {
+                        "dihedral": float(dihedrals[idx]),
+                        "mm_energy": float(mm_energy[idx]),
+                        "qm_energy": float(qm_energy[idx])
+                    }
+            optimizer = TorsionOptimizer(self.order, self.panelty_weight, self.threshold)
+            optimizer.infer_parameters(
                 dihedrals=dihedrals,
                 energy_mm=mm_energy,
                 energy_qm=qm_energy
             )
-            self.parameter_set[vi] = self.optimizer.get_parameters()
+            self.parameter_set[vi] = optimizer.get_parameters()
             parent_dihedral_index = [vfrag.fragment_parent_mapping[a] for a in vfrag.pivotal_dihedral_quartet[0]]
             self.parameter_set[vi]["dihedal"] = parent_dihedral_index
             
         self.save_to_yaml(self.conformer_data, output_dir/"conformer_data.yaml")
         self.save_to_yaml(self.parameter_set, output_dir/"parameter_set.yaml")
             
-    
     @staticmethod    
     def save_to_yaml(dict_data, yaml_file):
         with open(yaml_file, "w") as f:
             yaml.dump(dict_data, f)
         
-    
-    def write_slurm(self, slurm_filename, input_file, output_dir, charge):
-        slurm_content = SLURM_HEADER_CPU.copy()
+    def write_script(self, slurm_filename, input_file, output_dir, charge, local=False):
+        if local:
+            slurm_content = "#!/bin/bash\n"
+        else:
+            slurm_content = SLURM_HEADER_CPU
         psi4_python_exec = Path(__file__).parent.parent / "qm" / "psi4_calculate_energy.py"
         slurm_content += f"python" \
                             f" {str(psi4_python_exec.resolve())}" \
                             f" {str(input_file)}" \
                             f" {str(output_dir)}" \
                             f" --charge {charge}" \
-                            f" --memory {self.memory}" \
+                            f" --memory '{self.memory}'" \
                             f" --n_threads {self.threads}" \
                             f" --method_basis {self.method}/{self.basis}" \
                             f"\n"

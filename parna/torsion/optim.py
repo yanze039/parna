@@ -1,15 +1,7 @@
-import json
 import numpy as np
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
 from parna.logger import getLogger
-from .module import TorsionFragmentizer
-
-from pathlib import Path
-import rdkit.Chem as Chem
-
-from parna.utils import rd_load_file
 
 
 logger = getLogger(__name__)
@@ -19,14 +11,14 @@ class TorsionOptimizer(nn.Module):
     def __init__(self, order=4, panelty_weight=0.1, threshold=0.01):
         super(TorsionOptimizer, self).__init__()
         self.order = order
-        self.k = nn.Parameter(torch.zeros(size=(self.order,)), requires_grad=True)
-        self.periodicity = torch.tensor([i + 1 for i in range(order)])
-        self.phase = torch.zeros((self.order,))
+        self.k = nn.Parameter(torch.zeros(size=(self.order,)).reshape(1,-1), requires_grad=True)
+        self.periodicity = torch.tensor([i + 1 for i in range(order)]).reshape(1,-1)
+        self.phase = torch.zeros((self.order,)).reshape(1,-1)
         for i in range(self.order):
             if i % 2 == 0:
-                self.phase[i] = 0
+                self.phase[0,i] = 0
             else:
-                self.phase[i] = np.pi
+                self.phase[0,i] = np.pi
         
         self.mse = nn.MSELoss()
         self.panelty_weight = panelty_weight
@@ -63,7 +55,7 @@ class TorsionOptimizer(nn.Module):
                  dihedrals: torch.Tensor,
                  energy_mm: torch.Tensor, 
                  energy_qm: torch.Tensor, 
-                 n_iter: int = 1000, 
+                 n_iter: int = 5000, 
                  lr: float = 1e-3, 
                  weighted: bool = True):
         """Optimize the torsion angles. All inputs are torch.Tensor.
@@ -79,47 +71,49 @@ class TorsionOptimizer(nn.Module):
             optimizer.zero_grad()
             energy_pred = self(dihedrals)
             energy_mm_pred = energy_mm+energy_pred.flatten()
+            
             if weighted:
                 loss = self.loss_weighted(energy_mm_pred, energy_qm)
             else:
                 loss = self.loss(energy_pred, energy_qm)
             loss.backward()
             optimizer.step()
-            if i % 100 == 0:
+            if i % 500 == 0:
                 logger.info(f"Iter: {i}, Loss: {loss.item()}")
-        return self.k.detach().numpy()
     
     def infer_parameters(self,
                          dihedrals: np.ndarray,
                          energy_mm: np.ndarray,
                          energy_qm: np.ndarray,
         ):
-        dihedral_tensor = torch.from_numpy(dihedrals).float()
-        energy_mm_tensor = torch.from_numpy(energy_mm).float()
-        energy_qm_tensor = torch.from_numpy(energy_qm).float()
+        dihedral_tensor = torch.from_numpy(dihedrals).float().reshape(-1,1)
+        energy_mm_tensor = torch.from_numpy(energy_mm).float().flatten()
+        energy_qm_tensor = torch.from_numpy(energy_qm).float().flatten()
         self.optimize(dihedral_tensor, energy_mm_tensor, energy_qm_tensor)
         # drop k if it is less than 1e-2
-        if torch.all(self.k > self.threshold):
+        if torch.all(torch.abs(self.k) > self.threshold):
             return self.k.detach().numpy()
         else:
-            print("Values of k are less than 1e-2. Dropping them and reoptimizing.")
-        new_k_set = []
-        new_phase = []
-        new_periodicity = []
-        for i in range(self.order):
-            if self.k[i] >= self.threshold:
-                new_k_set.append(self.k[i])
-                new_phase.append(self.phase[i])
-                new_periodicity.append(self.periodicity[i])
-        self.k = nn.Parameter(torch.tensor(new_k_set), requires_grad=True)
-        self.phase = torch.tensor(new_phase)
-        self.periodicity = torch.tensor(new_periodicity)
-        self.optimize(dihedral_tensor, energy_mm_tensor, energy_qm_tensor)
+            logger.info(self.get_parameters())
+            logger.info("Values of k are less than 1e-2. Dropping them and reoptimizing.")
+            new_k_set = []
+            new_phase = []
+            new_periodicity = []
+            for i in range(self.order):
+                if torch.abs(self.k[0,i]) >= self.threshold:
+                    new_k_set.append(self.k[0,i])
+                    new_phase.append(self.phase[0,i])
+                    new_periodicity.append(self.periodicity[0,i])
+            self.k = nn.Parameter(torch.tensor(new_k_set).reshape(1,-1), requires_grad=True)
+            self.phase = torch.tensor(new_phase).reshape(1,-1)
+            self.periodicity = torch.tensor(new_periodicity).reshape(1,-1)
+            self.optimize(dihedral_tensor, energy_mm_tensor, energy_qm_tensor, n_iter=3000)
+        logger.info(f"FINAL Paremeters: {self.get_parameters()}")
     
     def get_parameters(self):
         return {
-            "k": self.k.detach().numpy(),
-            "periodicity": self.periodicity.numpy(),
-            "phase": self.phase.numpy()
+            "k": self.k.detach().numpy().tolist(),
+            "periodicity": self.periodicity.numpy().tolist(),
+            "phase": self.phase.numpy().tolist()
         }
 
