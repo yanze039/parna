@@ -249,9 +249,11 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name, tightn
 
     total_charge_mol = sum([x["charge"] for x in charge_dict.values()])
     # if input_file is xyz file, convert it to pdb file
-    if str(input_file).endswith(".xyz"):
+    if not str(input_file).endswith(".pdb"):
         tmp_pdb = str(output_dir/(input_file.stem+".tmp.pdb"))
-    Chem.MolToPDBFile(query, tmp_pdb, flavor=2)
+        Chem.MolToPDBFile(query, tmp_pdb, flavor=2)
+    else:
+        tmp_pdb = input_file
     
     File2MOL2(
         tmp_pdb,

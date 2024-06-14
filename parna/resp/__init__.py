@@ -8,6 +8,7 @@ from parna.logger import getLogger
 from parna.qm.xtb import structure_optimization, gen_multi_conformations
 from parna.utils import map_atoms, rd_load_file, split_xyz_file
 import os
+import numpy as np
 
 logger = getLogger(__name__)
 
@@ -115,9 +116,7 @@ def RESP_cap(
         tightness=0.1
     )
     os.rename(output_dir/f"xtbopt.0.100.mol2", output_dir/f"{Path(input_file).stem}.mol2")
-
-
-import numpy as np
+    
 
 def RESP_fragment(
         input_file,

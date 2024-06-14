@@ -5,7 +5,7 @@ from pathlib import Path
 import os
 import shutil
 from collections import OrderedDict
-from parna.utils import flatten_list, atomName_to_index, map_atoms
+from parna.utils import flatten_list, atomName_to_index, map_atoms, rd_load_file
 from parna.logger import getLogger
 
 logger = getLogger(__name__)
@@ -159,7 +159,7 @@ def getEquivalenceConstraints(query):
         "Stage2": equal_H_CH2 + equal_H_CH3
     }
 
-def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0.1, wfn_file_type="molden"):
+def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0.1, wfn_file_type="molden", wfn_file_prefix="resp_conformer"):
 
     constraint_types = {
         "OH5": {
@@ -175,7 +175,7 @@ def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0
     input_file = Path(input_file)
     output_dir = Path(output_dir)
     wfn_dir = Path(wfn_directory)
-    fchk_files = list(wfn_dir.glob(f"*.{wfn_file_type}"))
+    fchk_files = list(wfn_dir.glob(f"{wfn_file_prefix}*.{wfn_file_type}"))
     conf_list_txt = output_dir/"conformers_list.txt"
     sugar_template_file = Path(__file__).parent.parent/"template/sugar_template.pdb"
     n_conf = len(fchk_files)
@@ -186,26 +186,26 @@ def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0
     
     fchk_file = fchk_files[0]
     if str(input_file).endswith(".pdb"):
-        query = Chem.MolFromPDBFile(str(input_file), removeHs = False)
+        query = rd_load_file(str(input_file), removeHs = False, determine_bond_order=False)
     elif str(input_file).endswith(".xyz"):
-        query = Chem.MolFromXYZFile(str(input_file))
+        query = rd_load_file(str(input_file), determine_bond_order=False)
     else:
         raise ValueError("The input file is not supported")
-    template = Chem.MolFromPDBFile(str(sugar_template_file), removeHs = False)
+    template = rd_load_file(str(sugar_template_file), removeHs = False)
     
     template_name2idx_map = atomName_to_index(template)
     atom_mapping = map_atoms(template, query)
+    
     atom_mapping_dict = {}
     for pair in atom_mapping:
         atom_mapping_dict[pair[0]] = pair[1]
     
     charge_constraints = []
     for constraint_type, atom_names in constraint_types.items():
-        atom_pair = []
-        for atom_name in atom_names["atoms"]:
-            idx = template_name2idx_map[atom_name]
-            atom_pair.append(atom_mapping_dict[idx])
-        charge_constraints.append([atom_pair, atom_names["value"]])
+        idx_list = [template_name2idx_map[atom_name] for atom_name in atom_names["atoms"]]
+        if all([x in atom_mapping_dict.keys() for x in idx_list]):
+            atom_pair = [atom_mapping_dict[idx] for idx in idx_list]
+            charge_constraints.append([atom_pair, atom_names["value"]])
     
     eq_constraints = getEquivalenceConstraints(query)
 
@@ -281,14 +281,22 @@ def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0
         charge_dict = read_chg(chg_file)
 
     total_charge_mol = sum([x["charge"] for x in charge_dict.values()])
+    tmp_pdb = str(output_dir/(input_file.stem+".tmp.pdb"))
+    if not str(input_file).endswith(".pdb"):
+        Chem.MolToPDBFile(query, tmp_pdb, flavor=2)
+    else:
+        shutil.copy(input_file, tmp_pdb)
+        
     File2MOL2(
-        str(input_file),
+        str(tmp_pdb),
         "pdb",
         (output_dir/f"{Path(input_file).stem}.tmp.mol2").resolve(), 
         "amber",
         str(residue_name),
         charge=int(total_charge_mol)
     )
+    os.remove(tmp_pdb)
+    
     mol2 = pmd.load_file(str(output_dir/f"{Path(input_file).stem}.tmp.mol2"))
     
     for idx, atom in enumerate(mol2.atoms):
