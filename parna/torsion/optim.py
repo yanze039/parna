@@ -8,25 +8,30 @@ logger = getLogger(__name__)
 
 
 class TorsionOptimizer(nn.Module):
-    def __init__(self, order=4, panelty_weight=0.1, threshold=0.01):
+    def __init__(self, order=4, panelty_weight=0.1, threshold=0.01, fix_phase=True):
         super(TorsionOptimizer, self).__init__()
         self.order = order
         self.k = nn.Parameter(torch.zeros(size=(self.order,)).reshape(1,-1), requires_grad=True)
         self.periodicity = torch.tensor([i + 1 for i in range(order)]).reshape(1,-1)
-        self.phase = torch.zeros((self.order,)).reshape(1,-1)
+        phase = torch.zeros((self.order,)).reshape(1,-1)
         for i in range(self.order):
             if i % 2 == 0:
-                self.phase[0,i] = 0
+                phase[0,i] = 0
             else:
-                self.phase[0,i] = np.pi
+                phase[0,i] = np.pi
         
+        if fix_phase:
+            self.phase = phase
+        else:
+            self.phase = nn.Parameter(phase, requires_grad=True)
+        self.fix_phase = fix_phase
         self.mse = nn.MSELoss()
         self.panelty_weight = panelty_weight
         self.threshold = threshold
         logger.info(f"Panelty weight: {self.panelty_weight}")
     
     def forward(self, dihedrals):
-        cos_val = torch.cos( dihedrals * self.periodicity + self.phase ) * self.k
+        cos_val = (1. + torch.cos( dihedrals * self.periodicity - self.phase )) * self.k
         return cos_val.sum(dim=-1)
     
     def loss_weighted(self, energy_pred, energy_true):
@@ -105,15 +110,25 @@ class TorsionOptimizer(nn.Module):
                     new_phase.append(self.phase[0,i])
                     new_periodicity.append(self.periodicity[0,i])
             self.k = nn.Parameter(torch.tensor(new_k_set).reshape(1,-1), requires_grad=True)
-            self.phase = torch.tensor(new_phase).reshape(1,-1)
+            if self.fix_phase:
+                self.phase = torch.tensor(new_phase).reshape(1,-1)
+            else:
+                self.phase = nn.Parameter(torch.tensor(new_phase).reshape(1,-1), requires_grad=True)
             self.periodicity = torch.tensor(new_periodicity).reshape(1,-1)
             self.optimize(dihedral_tensor, energy_mm_tensor, energy_qm_tensor, n_iter=3000)
         logger.info(f"FINAL Paremeters: {self.get_parameters()}")
     
     def get_parameters(self):
-        return {
-            "k": self.k.detach().numpy().tolist(),
-            "periodicity": self.periodicity.numpy().tolist(),
-            "phase": self.phase.numpy().tolist()
-        }
+        if self.fix_phase:
+            return {
+                "k": self.k.detach().numpy().flatten().tolist(),
+                "periodicity": self.periodicity.numpy().flatten().tolist(),
+                "phase": self.phase.numpy().flatten().tolist()
+            }
+        else:
+            return {
+                "k": self.k.detach().numpy().flatten().tolist(),
+                "periodicity": self.periodicity.numpy().flatten().tolist(),
+                "phase": self.phase.detach().numpy().flatten().tolist()
+            }
 

@@ -7,8 +7,17 @@ from parna.utils import merge_list, flatten_list, map_atoms, inverse_mapping, rd
 from parna.logger import getLogger
 from typing import Tuple, Union, List
 from pathlib import Path
+import pathlib
+from pathlib import PosixPath
 import yaml
 
+
+def posix_path_constructor(loader, node):
+    value = loader.construct_sequence(node)
+    return "/".join(value)
+
+
+yaml.add_constructor('tag:yaml.org,2002:python/object/apply:pathlib.PosixPath', posix_path_constructor)
 
 logger = getLogger(__name__)
 
@@ -43,6 +52,12 @@ TERMINAL_HYDROGENS = {
     'thiol': '[SX2H]',
     'methyl': '[CX4H3]',
     'amine+': '[NX4H3]',
+}
+
+BOND_ORDERS = {
+    Chem.BondType.SINGLE: 1.0,
+    Chem.BondType.DOUBLE: 2.0,
+    Chem.BondType.TRIPLE: 3.0,
 }
 
 
@@ -108,7 +123,7 @@ class Fragment:
     
     def load(self, filename):
         with open(filename, "r") as f:
-            data = yaml.safe_load(f)
+            data = yaml.load(f, Loader=yaml.FullLoader)
         self.mol = rd_load_file(data["mol_file"])
         self.rotatable_bond = data["rotatable_bond"]
         self.dihedral_quartets = data["dihedral_quartets"]
@@ -307,15 +322,13 @@ class TorsionFragmentizer:
             return self.mol
         
         # find the bonds to break
-        breaking_bond_idx_list = []
-        breaking_bond_type_list = []
-        for atom_idx in atom_list:
-            atom = self.mol.GetAtomWithIdx(atom_idx)
-            for neighbor in atom.GetNeighbors():
-                if neighbor.GetIdx() not in atom_list:
-                    bond = self.mol.GetBondBetweenAtoms(atom_idx, neighbor.GetIdx())
-                    breaking_bond_idx_list.append(bond.GetIdx())
-                    breaking_bond_type_list.append(bond.GetBondType())
+        atom_list = self.exclude_breaking_aromatic_bonds(self.mol, atom_list)
+        logger.info(f"Atom list after excluding aromatic bonds: {atom_list}")
+        atom_list = self.exclude_breaking_heteroatom_pairs(self.mol, atom_list)
+        logger.info(f"Atom list after excluding heteroatom pairs: {atom_list}")
+        
+        breaking_bond_idx_list, breaking_bond_type_list = self.find_breaking_bonds(self.mol, atom_list)
+        
         if len(breaking_bond_idx_list) == 0:
             raise RuntimeError("No bond found to break")
         logger.info(f"Found {len(breaking_bond_idx_list)} bonds to break.")        
@@ -331,27 +344,48 @@ class TorsionFragmentizer:
         methyl_caps = []
         for atom in edit.GetAtoms():
             if atom.GetSymbol() == '*':
+                
                 dummy_neighbor = atom.GetNeighbors()[0]
+                print("Cap Neighbor", dummy_neighbor.GetIdx(), dummy_neighbor.GetSymbol())
+                bond_type = edit.GetBondBetweenAtoms(atom.GetIdx(), dummy_neighbor.GetIdx()).GetBondType()
                 if self.cap_methylation and dummy_neighbor.GetAtomicNum() in [7, 8, 16]:
                     cap = Chem.Atom(6)
                     cap.SetProp("_Cap", "C")
+                    cap.SetProp("_NumHs", str(int(4-BOND_ORDERS[bond_type])))
                     methyl_caps.append(atom.GetIdx())
+                    edit.ReplaceAtom(atom.GetIdx(), cap, updateLabel=True, preserveProps=False)
                 else:
                     cap = Chem.Atom(1)
                     cap.SetProp("_Cap", "H")
-                edit.ReplaceAtom(atom.GetIdx(), cap, updateLabel=True, preserveProps=False)
-        
-        logger.info(f"Added {len(methyl_caps)} methyl groups.")
+                    if dummy_neighbor.HasProp("_NumHs"):
+                        dummy_neighbor.SetProp("_NumHs", str(int(dummy_neighbor.GetProp("_NumHs"))+int(int(BOND_ORDERS[bond_type]-1))))
+                    else:
+                        dummy_neighbor.SetProp("_NumHs", str(int(BOND_ORDERS[bond_type]-1)))
+                    edit.ReplaceAtom(atom.GetIdx(), cap, updateLabel=True, preserveProps=False)
+                    edit.GetBondBetweenAtoms(dummy_neighbor.GetIdx(), atom.GetIdx()).SetBondType(Chem.BondType.SINGLE)
+
+        if self.cap_methylation:
+            logger.info(f"Added {len(methyl_caps)} methyl groups.")
         for atom in edit.GetAtoms():
             # set explicit hydroms
-            if atom.GetIdx() not in methyl_caps:
-                atom.SetNumExplicitHs(0)
+            # if atom.GetIdx() not in methyl_caps:
+            #     atom.SetNumExplicitHs(0)
+            #     atom.SetNoImplicit(True)
+            # else:
+            #     atom.SetNumExplicitHs(3)
+            #     atom.SetNoImplicit(True)
+            
+            if atom.HasProp("_NumHs"):
+                print("Cap", atom.GetIdx(), atom.GetProp("_NumHs"), atom.GetSymbol())
+                atom.SetNumExplicitHs(int(atom.GetProp("_NumHs")))
                 atom.SetNoImplicit(True)
             else:
-                atom.SetNumExplicitHs(3)
+                atom.SetNumExplicitHs(0)
                 atom.SetNoImplicit(True)
+                
         fragment = edit.GetMol()
         fragment.UpdatePropertyCache(strict=False)
+
         for atom in fragment.GetAtoms():
             if not atom.IsInRing():
                 if atom.GetIsAromatic():
@@ -362,12 +396,61 @@ class TorsionFragmentizer:
                     if atom.GetExplicitValence() - n_bonds >= 0:
                         atom.SetNumExplicitHs(atom.GetExplicitValence() - n_bonds)
                     atom.SetIsAromatic(False)
-                
+                    
         fragment = Chem.AddHs(fragment)
         Chem.SanitizeMol(fragment)
+        
+        # from rdkit.Chem import Draw
+        # import copy
+        # imgmol = copy.deepcopy(fragment)
+        # AllChem.Compute2DCoords(imgmol)
+        # img = Draw.MolToImage(imgmol)
+        # img.save("fragment.png")
+        
+        logger.info(f"Fragment owns charge: {Chem.GetFormalCharge(fragment)}")
+        Chem.rdDetermineBonds.DetermineBondOrders(fragment, charge=Chem.GetFormalCharge(fragment))
         AllChem.EmbedMolecule(fragment, randomSeed=20240519)
+        AllChem.MMFFOptimizeMolecule(fragment)
         
         return fragment
+    
+    def exclude_breaking_aromatic_bonds(self, mol: Chem.rdchem.Mol, atom_list: List[int]):
+        breaking_bond_idx_list, breaking_bond_type_list = self.find_breaking_bonds(mol, atom_list)
+        while Chem.rdchem.BondType.AROMATIC in breaking_bond_type_list:
+            for i in range(len(breaking_bond_idx_list)):
+                if breaking_bond_type_list[i] == Chem.rdchem.BondType.AROMATIC:
+                    bond = mol.GetBonds()[breaking_bond_idx_list[i]]
+                    for ring in self.rings:
+                        if set([bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()]).intersection(set(ring)):
+                            atom_list = merge_list(atom_list, ring)
+                            for ratom in ring:
+                                atom = mol.GetAtomWithIdx(ratom)
+                                for neighbor in atom.GetNeighbors():
+                                    if neighbor.GetIdx() not in atom_list:
+                                        atom_list.append(neighbor.GetIdx())
+            breaking_bond_idx_list, breaking_bond_type_list = self.find_breaking_bonds(mol, atom_list)
+        return atom_list
+    
+    def exclude_breaking_heteroatom_pairs(self, mol: Chem.rdchem.Mol, atom_list: List[int]):
+        breaking_bond_idx_list, _ = self.find_breaking_bonds(mol, atom_list)
+        for i in range(len(breaking_bond_idx_list)):
+            bond = mol.GetBonds()[breaking_bond_idx_list[i]]
+            bond_partner_idx = [bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()]
+            if all([mol.GetAtomWithIdx(j).GetAtomicNum() not in [5, 6, 1] for j in bond_partner_idx]):
+                atom_list = merge_list(atom_list, bond_partner_idx)
+        return atom_list
+        
+    def find_breaking_bonds(self, mol: Chem.rdchem.Mol, atom_list: List[int]):
+        breaking_bond_idx_list = []
+        breaking_bond_type_list = []
+        for atom_idx in atom_list:
+            atom = mol.GetAtomWithIdx(atom_idx)
+            for neighbor in atom.GetNeighbors():
+                if neighbor.GetIdx() not in atom_list:
+                    bond = mol.GetBondBetweenAtoms(atom_idx, neighbor.GetIdx())
+                    breaking_bond_idx_list.append(bond.GetIdx())
+                    breaking_bond_type_list.append(bond.GetBondType())
+        return breaking_bond_idx_list, breaking_bond_type_list
         
     
     def get_dihedral_quartet_from_bond(self, mol: Chem.rdchem.Mol, bond: Union[Tuple[int, int], List[int]]):
@@ -432,4 +515,147 @@ class TorsionFragmentizer:
         else:
             raise ValueError("File format not supported.")
         
+
+class C5Fragmentizer:
+    def __init__(self, 
+                 mol: Chem.rdchem.Mol,
+                 C1p_index: int,
+                 O5p_index: int,
+                 C5p_index: int,
+                 rotatable_bonds_smarts : str ="[!D1&!$(*#*)]-&!@[!D1&!$(*#*)]",
+                 ):
+        self.mol = mol
+        self.C1p_index = C1p_index
+        self.O5p_index = O5p_index
+        self.C5p_index = C5p_index
+        self.bond = self.mol.GetBondBetweenAtoms(self.O5p_index, self.C5p_index)
+        self.bond_index = self.bond.GetIdx()
+        self.rotatable_bonds_smarts = rotatable_bonds_smarts
+        self.non_14_hydrogen = True
+        self.terminal_hydrogens = TERMINAL_HYDROGENS
+        self.terminal_mols = [Chem.MolFromSmarts(th) for th in self.terminal_hydrogens.values()]
+        self.terminal_matches = []
+        for th_mol in self.terminal_mols:
+            matches = self.mol.GetSubstructMatches(th_mol)
+            if len(matches) != 0:
+                self.terminal_matches.extend(list(matches))
+        self.terminal_matches = flatten_list(self.terminal_matches)
         
+    
+    def get_rotatable_bonds(self):
+        rotatable_bond = Chem.MolFromSmarts(self.rotatable_bonds_smarts)
+        _matches = self.mol.GetSubstructMatches(rotatable_bond)
+        if self.non_14_hydrogen:
+            matches = []
+            for match in _matches:
+                if any([m in self.terminal_matches for m in match]):
+                    continue
+                matches.append(match)
+        else:
+            matches = _matches
+        return matches
+    
+    def fragment_on_bond(self):
+        frags_dummy = Chem.FragmentOnBonds(self.mol, [self.bond_index], addDummies=True, bondTypes=[self.bond.GetBondType()])
+        frags_assigned = []
+        frags_mol_atom_mapping = []
+        frags_mols = Chem.GetMolFrags(
+            frags_dummy, asMols=True, sanitizeFrags=False, 
+            frags=frags_assigned, fragsMolAtomMapping=frags_mol_atom_mapping)
+        edit = Chem.RWMol(frags_mols[frags_assigned[self.C5p_index]])
+        for atom in edit.GetAtoms():
+            if atom.GetSymbol() == '*':
+                cap = Chem.Atom(1)
+                cap.SetProp("_Cap", "H")
+                edit.ReplaceAtom(atom.GetIdx(), cap, updateLabel=True, preserveProps=False)
+        for atom in edit.GetAtoms():
+            # set explicit hydroms
+            atom.SetNumExplicitHs(0)
+            atom.SetNoImplicit(True)
+        fragment = edit.GetMol()
+        fragment.UpdatePropertyCache(strict=False)
+        for atom in fragment.GetAtoms():
+            if not atom.IsInRing():
+                if atom.GetIsAromatic():
+                    for bond in atom.GetBonds():
+                        if bond.GetBondType() == Chem.BondType.AROMATIC:
+                            bond.SetBondType(Chem.BondType.SINGLE)
+                    n_bonds = len(list(atom.GetBonds()))
+                    if atom.GetExplicitValence() - n_bonds >= 0:
+                        atom.SetNumExplicitHs(atom.GetExplicitValence() - n_bonds)
+                    atom.SetIsAromatic(False)
+        fragment = Chem.AddHs(fragment)
+        Chem.SanitizeMol(fragment)
+        AllChem.EmbedMolecule(fragment, randomSeed=20240519)
+        return fragment
+    
+    def fragmentize(self):
+        self.rotatable_bonds = self.get_rotatable_bonds()
+        self.rotatable_bond_C1p = None
+        for rotatable_bond in self.rotatable_bonds:
+            if self.C1p_index in rotatable_bond:
+                self.rotatable_bond_C1p = rotatable_bond
+                break
+        self.fragment_mol = self.fragment_on_bond()
+        self.fragment_atom_mapping = map_atoms(self.mol, self.fragment_mol)
+        mapping_dict = {}
+        for j, k in self.fragment_atom_mapping:
+            mapping_dict[j] = k
+        self.mapping_dict = mapping_dict
+            
+    @property
+    def fragment(self):
+        if self.rotatable_bond_C1p is None:
+            raise RuntimeError("C1' rotatable bond not found.")
+        rbond = (self.mapping_dict[self.rotatable_bond_C1p[0]], self.mapping_dict[self.rotatable_bond_C1p[1]])
+        return Fragment(
+                self.fragment_mol, 
+                rbond, 
+                self.get_dihedral_quartet_from_bond(self.fragment_mol, rbond),
+                self.mapping_dict,
+                Chem.GetFormalCharge(self.fragment_mol)
+            ) 
+    
+    def get_dihedral_quartet_from_bond(self, mol: Chem.rdchem.Mol, bond: Union[Tuple[int, int], List[int]]):
+        """
+        Get the dihedral quartet from a bond
+        """
+        dihedral_quartet = {
+            "hetereo-hetereo": [],  # heteroatom - heteroatom
+            "hetereo-carbon": [],  # heteroatom - carbon
+            "carbon-carbon": [],  # carbon - carbon
+        }
+        atom1 = mol.GetAtomWithIdx(bond[0])
+        atom2 = mol.GetAtomWithIdx(bond[1])
+        neighbor1_dict = {"hetereoatom": [], "carbon": [], "hydrogen": []}
+        neighbor2_dict = {"hetereoatom": [], "carbon": [], "hydrogen": []}
+        for neighbor1 in atom1.GetNeighbors():
+            if neighbor1.GetIdx() != atom2.GetIdx():
+                if neighbor1.GetAtomicNum() == 1:
+                    neighbor1_dict["hydrogen"].append(neighbor1)
+                elif neighbor1.GetAtomicNum() == 6:
+                    neighbor1_dict["carbon"].append(neighbor1)
+                else:
+                    neighbor1_dict["hetereoatom"].append(neighbor1)
+        for neighbor2 in atom2.GetNeighbors():
+            if neighbor2.GetIdx() != atom1.GetIdx():
+                if neighbor2.GetAtomicNum() == 1:
+                    neighbor2_dict["hydrogen"].append(neighbor2)
+                elif neighbor2.GetAtomicNum() == 6:
+                    neighbor2_dict["carbon"].append(neighbor2)
+                else:
+                    neighbor2_dict["hetereoatom"].append(neighbor2)
+        
+        for hetereoatom1 in neighbor1_dict["hetereoatom"]:
+            for hetereoatom2 in neighbor2_dict["hetereoatom"]:
+                dihedral_quartet["hetereo-hetereo"].append((hetereoatom1.GetIdx(), atom1.GetIdx(), atom2.GetIdx(), hetereoatom2.GetIdx()))
+        for hetereoatom in neighbor1_dict["hetereoatom"]:
+            for carbon in neighbor2_dict["carbon"]:
+                dihedral_quartet["hetereo-carbon"].append((hetereoatom.GetIdx(), atom1.GetIdx(), atom2.GetIdx(), carbon.GetIdx()))
+        for carbon in neighbor1_dict["carbon"]:
+            for hetereoatom in neighbor2_dict["hetereoatom"]:
+                dihedral_quartet["hetereo-carbon"].append((carbon.GetIdx(), atom1.GetIdx(), atom2.GetIdx(), hetereoatom.GetIdx()))
+        for carbon1 in neighbor1_dict["carbon"]:
+            for carbon2 in neighbor2_dict["carbon"]:
+                dihedral_quartet["carbon-carbon"].append((carbon1.GetIdx(), atom1.GetIdx(), atom2.GetIdx(), carbon2.GetIdx()))
+        return dihedral_quartet
