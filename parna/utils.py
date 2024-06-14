@@ -29,6 +29,7 @@ def rd_load_file(
     infile = Path(infile)
     if infile.suffix == ".pdb":
         mol = Chem.MolFromPDBFile(str(infile), removeHs=removeHs, sanitize=sanitize)
+        Chem.rdDetermineBonds.DetermineConnectivity(mol)
     elif infile.suffix == ".mol2":
         if atomtype is not None:
             pmd_mol = pmd.load_file(str(infile))
@@ -43,13 +44,17 @@ def rd_load_file(
             mol = Chem.MolFromMol2File(str(infile), removeHs=removeHs, sanitize=sanitize)
     elif infile.suffix == ".xyz":
         mol = Chem.MolFromXYZFile(str(infile))
+        Chem.rdDetermineBonds.DetermineConnectivity(mol)
     elif infile.suffix == ".sdf":
         suppl = Chem.SDMolSupplier(str(infile), removeHs=removeHs, sanitize=sanitize)
         mol = suppl[0]
     else:
         raise ValueError("The input file is not a pdb file")
+    if sanitize:
+        Chem.SanitizeMol(mol)
     if determine_bond_order:
         rdDetermineBonds.DetermineBondOrders(mol, charge=charge)
+
     return mol
 
 
