@@ -2,6 +2,7 @@ from pathlib import Path
 import parmed as pmd
 import os
 from parna.logger import getLogger
+from typing import List
 
 
 logger = getLogger("parna.parm")
@@ -30,7 +31,7 @@ def check_atomtype_mismatch(parm, rst7):
 
 def parameterize(oligoFile, proteinFile=None, external_libs=[], 
                  additional_frcmods=[], output_dir=None, n_cations=0, n_anions=0, 
-                 prefix="complex", check_atomtypes=True, solvated=True, saveparm=True):
+                 prefix="complex", check_atomtypes=True, solvated=True, saveparm=True, addons:List[str]=[]):
     oligoFile = Path(oligoFile)
     
     leap_content = []
@@ -52,6 +53,10 @@ def parameterize(oligoFile, proteinFile=None, external_libs=[],
         external_libs = [external_libs]
     for extlib in external_libs:
         leap_content.append(f"loadoff {Path(extlib).resolve()}")
+    
+    for line in addons:
+        leap_content.append(line)
+        
     if proteinFile is not None:
         proteinFile = Path(proteinFile)
     if output_dir is None:
