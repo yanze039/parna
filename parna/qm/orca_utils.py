@@ -2,6 +2,7 @@ import os
 import subprocess
 from pathlib import Path
 from parna.logger import getLogger
+import argparse
 
 logger = getLogger(__name__)
 
@@ -94,3 +95,42 @@ def calculate_energy_orca(
     )
     return code
 
+
+
+def read_energy_from_txt(log_file: str, source='orca') -> float:
+    if source == 'psi4':
+        with open(log_file, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            if "Final Energy:" in line:
+                energy = float(line.split()[-1])
+                return energy
+        return None
+    elif source == 'orca':
+        with open(log_file, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            if "SCF Energy:" in line:
+                energy = float(line.split()[-1])
+                return energy
+        return None
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input_file", type=str)
+    parser.add_argument("output_dir", type=str)
+    parser.add_argument("--charge", type=int, default=0)
+    parser.add_argument("--n_threads", type=int, default=48)
+    parser.add_argument("--method_basis", type=str, default="HF/6-31G*")
+    parser.add_argument("--aqueous", action="store_true")
+    args = parser.parse_args()
+    logger.info(f"Calculating energy by {__file__}")
+    calculate_energy_orca(
+        args.input_file,
+        args.output_dir,
+        charge=args.charge,
+        n_threads=args.n_threads,
+        method_basis=args.method_basis,
+        aqueous=args.aqueous
+    )

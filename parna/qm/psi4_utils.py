@@ -23,6 +23,7 @@ def mk_psi4_geometry(atom_names: List[str], coords: np.ndarray, charge: int, mul
     ret = f"{charge} {mult}\n"
     for name, coord in zip(atom_names, coords):
         ret += f"{name} {coord[0]:>10.6f} {coord[1]:>10.6f} {coord[2]:>10.6f}\n"
+    print(ret)
     mol = psi4.geometry(ret)
     return mol
 
@@ -86,6 +87,7 @@ def calculate_energy_function(input_file,
                      method_basis="HF/6-31G*",
                      aqueous=False,
     ):
+    
     logger.info(f"calculating {method_basis} energy for " + str(input_file))
     output_dir = Path(output_dir)
     inFile = Path(input_file)
@@ -293,11 +295,20 @@ def calculate_energy_shell(input_file,
     print(code)
 
 
-def read_energy_from_log(log_file: str) -> float:
-    with open(log_file, 'r') as f:
-        lines = f.readlines()
-    for line in lines:
-        if "Final Energy:" in line:
-            energy = float(line.split()[-1])
-            return energy
-    return None
+def read_energy_from_log(log_file: str, source='psi4') -> float:
+    if source == 'psi4':
+        with open(log_file, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            if "Final Energy:" in line:
+                energy = float(line.split()[-1])
+                return energy
+        return None
+    elif source == 'orca':
+        with open(log_file, 'r') as f:
+            lines = f.readlines()
+        for line in lines:
+            if "FINAL SINGLE POINT ENERGY" in line:
+                energy = float(line.split()[-1])
+                return energy
+        return None
