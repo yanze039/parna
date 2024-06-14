@@ -1,6 +1,5 @@
 import numpy as np
 import rdkit
-from rdkit import Chem
 from rdkit.Chem import rdMolAlign
 from rdkit.Chem import rdMolTransforms
 from rdkit.Chem import Conformer
@@ -13,7 +12,11 @@ from parna.qm.xtb import XTB
 from typing import List, Tuple
 import os
 from pathlib import Path
-import shutil
+from parna.parm import parameterize, generate_frcmod
+from parna.resp import RESP_fragment
+import parmed as pmd
+import openmm as mm
+import openmm.app as app
 
 
 logger = getLogger(__name__)
@@ -115,5 +118,127 @@ def translate_conformer(conformer: Conformer, matrix: np.ndarray):
     mat_with_translation[:3, 3] = matrix
     rdMolTransforms.TransformConformer(conformer, mat_with_translation)
 
-        
+
+class MoleculeFactory:
+    def __init__(
+            self,
+            mol_name: str = "mol",
+            atom_type: str = "amber",
+            threads: int = 48,
+            memory: str = "160 GB",
+            resp_method: str = "HF",
+            resp_basis: str = "6-31G*",
+            resp_n_conformers: int = 6,
+            output_dir: str = None
+        ):
+        self.threads = threads
+        self.memory = memory
+        self.resp_method = resp_method
+        self.resp_basis = resp_basis
+        self.resp_n_conformers = resp_n_conformers
+        self.mol_name = mol_name
+        self.atom_type = atom_type
+        self.output_dir = output_dir
     
+    def charge_molecule(self, input_file, charge, output_dir):
+        """
+        Calculate RESP charges for a molecule.
+        Input:
+            input_file: str, `PDB` or `XYZ` file.
+            charge: int, charge of the molecule
+            output_dir: str, path to the output directory
+        """
+        RESP_fragment(
+            str(input_file),
+            charge,
+            str(output_dir),
+            self.mol_name,
+            memory=self.memory, 
+            n_threads=self.threads, 
+            method_basis=f"{self.resp_method}/{self.resp_basis}",
+            n_conformers=self.resp_n_conformers
+        )
+    
+    def parameterize(self, pdb_file, output_dir, prefix, addons=[]):
+        """
+        Parameterize a molecule using antechamber and tleap.
+        Input:
+            pdb_file: str, `PDB` file
+            output_dir: str, path to the output directory
+        """
+        output_dir = Path(output_dir)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        pdb_file = Path(pdb_file)
+        tmp_mol2 = output_dir / "tmp.mol2"
+        command_antechamber = [
+            "antechamber",
+            "-fi", "pdb",
+            "-i", str(pdb_file),
+            "-fo", "mol2",
+            "-o", str(tmp_mol2),
+            "-at", self.atom_type,
+            "-pf", "y",
+            "-rn", self.mol_name,
+        ]
+        os.system(" ".join(command_antechamber))
+        generate_frcmod(
+            input_file=str(tmp_mol2),
+            output_file=str(output_dir/f"{pdb_file.stem}.frcmod"),
+            sinitize=False
+        )
+        mol2_pmd = pmd.load_file(str(tmp_mol2))
+        for atom in mol2_pmd.atoms:
+            atom.charge = 0.0
+        tmp_lib = (output_dir/f"{pdb_file.stem}.tmp.lib")
+        tmp_pdb = (output_dir/f"{pdb_file.stem}.tmp.pdb")
+        mol2_pmd.save(str(tmp_lib), overwrite=True)
+        mol2_pmd.save(str(tmp_pdb), overwrite=True)
+        parameterize(
+            oligoFile=str(tmp_pdb),
+            external_libs=str(tmp_lib), 
+            additional_frcmods=str(output_dir/f"{pdb_file.stem}.frcmod"),
+            output_dir=output_dir,
+            prefix=prefix,
+            solvated=False,
+            saveparm=True,
+            check_atomtypes=False,
+            addons=addons
+        )
+        for tmp_file in [tmp_mol2, tmp_lib, tmp_pdb]:
+            if tmp_file.exists():
+                os.remove(tmp_file)
+    
+    @staticmethod
+    def calculate_mm_energy(parm, positions: np.ndarray, implicit_solvent=False):
+        if not implicit_solvent:
+            system = parm.createSystem(nonbondedMethod=app.NoCutoff, constraints=app.HBonds)
+        else:
+            system = parm.createSystem(
+                nonbondedMethod=app.CutoffNonPeriodic, constraints=app.HBonds,
+                implicitSolvent=app.HCT, useSASA=False) # corresponding to igb=1 in Amber)
+        context = mm.Context(system, mm.VerletIntegrator(0.001))
+        context.setPositions(positions)
+        energy = pmd.openmm.energy_decomposition(parm, context)
+        return energy
+    
+    @staticmethod
+    def calculate_mm_energy_sander(parm7: str, rst7: str, workdir="."):
+        parm7 = Path(parm7)
+        mol_name = parm7.stem
+        workdir = Path(workdir)
+        cwd = os.getcwd()
+        cpptraj_content = f"""parm {parm7} 
+        trajin {rst7} 
+        esander MOL out {mol_name}.dat gbsa 0 igb 
+        """
+        with open(workdir/f"{mol_name}.cpptraj.in", "w") as f:
+            f.write(cpptraj_content)
+        os.chdir(workdir)
+        os.system("cpptraj -i cpptraj.in")
+        os.chdir(cwd)
+        
+        
+        
+
