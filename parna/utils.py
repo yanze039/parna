@@ -26,6 +26,8 @@ def rd_load_file(
         removeHs=False,
         sanitize=True
     ):
+    """Load a file into RDKit `Chem.mol` object.
+    """
     infile = Path(infile)
     if infile.suffix == ".pdb":
         mol = Chem.MolFromPDBFile(str(infile), removeHs=removeHs, sanitize=sanitize)
@@ -53,7 +55,7 @@ def rd_load_file(
     if sanitize:
         Chem.SanitizeMol(mol)
     if determine_bond_order:
-        rdDetermineBonds.DetermineBondOrders(mol, charge=charge)
+        rdDetermineBonds.DetermineBonds(mol, charge=charge)
 
     return mol
 
