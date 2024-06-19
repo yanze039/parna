@@ -41,7 +41,8 @@ class TorsionFactory(MoleculeFactory):
             output_dir: str = None,
             cap_methylation: bool = True,
             aqueous: bool = False,
-            fix_phase: bool = True
+            fix_phase: bool = True,
+            determine_bond_orders: bool = False
         ):
         super().__init__(
             mol_name=mol_name,
@@ -57,6 +58,7 @@ class TorsionFactory(MoleculeFactory):
         self.cap_methylation = cap_methylation
         self.aqueous = aqueous
         self.fix_phase = fix_phase
+        self.determine_bond_orders = determine_bond_orders
         
         self.mol = None
         if template in ["A", "U", "G", "C"]:
@@ -110,7 +112,7 @@ class TorsionFactory(MoleculeFactory):
         self.match_template()
         n_atom_mod = self.mol.GetNumAtoms()
         unique_atoms = [i for i in range(n_atom_mod) if i not in [a[1] for a in self.core_atoms]]
-        TF = TorsionFragmentizer(self.mol, cap_methylation=self.cap_methylation)
+        TF = TorsionFragmentizer(self.mol, cap_methylation=self.cap_methylation, determine_bond_orders=self.determine_bond_orders)
         TF.fragmentize()
         self.valid_fragments = {}
         for idx, frag in enumerate(TF.fragments):
@@ -244,8 +246,12 @@ class TorsionFactory(MoleculeFactory):
                 positions = np.array(conf_mol.GetConformer().GetPositions()) / 10.
                 mm_energy_dict = self.calculate_mm_energy(parm_mol, positions, implicit_solvent=self.aqueous)
                 parm_mol.positions = positions
-                log_file = conf.with_suffix(".psi4.log")
-                qm_energy = read_energy_from_log(log_file)
+                if self.aqueous:
+                    log_file = conf.parent/f"{conf.stem}_property.txt"
+                    qm_energy = read_energy_from_txt(log_file)
+                else:
+                    log_file = conf.with_suffix(".psi4.log")
+                    qm_energy = read_energy_from_log(log_file)
                 dihedrals.append(float(parm_mol.dihedrals[dih_idx].measure() / 180.0 * np.pi))
                 mm_energies.append(mm_energy_dict["total"])
                 qm_energies.append(qm_energy * Hatree2kCalPerMol)

@@ -66,13 +66,21 @@ class Fragment:
                  mol: Chem.rdchem.Mol = None,
                  rotatable_bond: Tuple[int, int] = None,
                  dihedral_quartets: dict = None,
-                 fragment_parent_mapping = None,
+                 parent_fragment_mapping = None,
                  charge=None
     ):
+        """Fragment class to store fragment information
+        Args:
+            mol (Chem.rdchem.Mol): RDKit molecule object
+            rotatable_bond (Tuple[int, int]): Rotatable bond indices of the `Fragment`.
+            dihedral_quartets (dict): Dihedral quartets (Index from `Fragment`)
+            parent_fragment_mapping (dict): Atom mapping. Keys: Praent atom index, Values: Fragment atom index
+            charge (int): Charge of the fragment
+        """
         self.mol = mol
         self.rotatable_bond = rotatable_bond
         self.dihedral_quartets = dihedral_quartets
-        self.parent_fragment_mapping = fragment_parent_mapping
+        self.parent_fragment_mapping = parent_fragment_mapping
         self.charge = charge
     
     @property
@@ -114,20 +122,20 @@ class Fragment:
             raise ValueError("Format not supported.")
         with open(output_dir/"fragment.yaml", "w") as f:
             yaml.dump({
-                "mol_file": mol_file.resolve(),
-                "rotatable_bond": self.rotatable_bond,
+                "mol_file": str(mol_file.resolve()),
+                "rotatable_bond": list(self.rotatable_bond),
                 "dihedral_quartets": self.dihedral_quartets,
-                "fragment_parent_mapping": self.fragment_parent_mapping,
+                "parent_fragment_mapping": self.parent_fragment_mapping,
                 "charge": self.charge
             }, f)
     
     def load(self, filename):
         with open(filename, "r") as f:
             data = yaml.load(f, Loader=yaml.FullLoader)
-        self.mol = rd_load_file(data["mol_file"])
-        self.rotatable_bond = data["rotatable_bond"]
+        self.mol = rd_load_file(data["mol_file"], charge=int(data["charge"]))
+        self.rotatable_bond = tuple(data["rotatable_bond"])
         self.dihedral_quartets = data["dihedral_quartets"]
-        self.parent_fragment_mapping = data["fragment_parent_mapping"]
+        self.parent_fragment_mapping = data["parent_fragment_mapping"]
         self.charge = data["charge"]
         
         
@@ -136,7 +144,8 @@ class TorsionFragmentizer:
                  mol: Chem.rdchem.Mol,
                  cap_methylation : bool = True,
                  rotatable_bonds_smarts : str ="[!D1&!$(*#*)]-&!@[!D1&!$(*#*)]",
-                 non_14_hydrogen: bool = True
+                 non_14_hydrogen: bool = True,
+                 determine_bond_orders: bool = True
                  ):
         self.mol = mol
         self.rotatable_bonds_smarts = rotatable_bonds_smarts
@@ -159,6 +168,7 @@ class TorsionFragmentizer:
                 self.terminal_matches.extend(list(matches))
         self.terminal_matches = flatten_list(self.terminal_matches)
         self.non_14_hydrogen = non_14_hydrogen
+        self.determine_bond_orders = determine_bond_orders
         
     def get_sssr(self):
         return self.sssr
@@ -209,35 +219,28 @@ class TorsionFragmentizer:
     def fragmentize(self):
         self.rotatable_bonds = self.get_rotatable_bonds()
         logger.info(f"Found {len(self.rotatable_bonds)} rotatable bonds.")
-        self.fragment_mols = self.fragment_on_bonds(self.rotatable_bonds)
-        self._get_fragment_atom_mapping()
-        mapping_dict = {}
-        for i, mapping in enumerate(self.fragment_atom_mapping):
-            mapping_dict[i] = {}
-            for j, k in mapping:
-                mapping_dict[i][j] = k
-        self.mapping_dict = mapping_dict
-        self.fragment_rotamer_bond = []
-        for i, bond in enumerate(self.rotatable_bonds):
-            self.fragment_rotamer_bond.append((mapping_dict[i][bond[0]], mapping_dict[i][bond[1]]))
+        self._fragments = self.fragment_on_bonds(self.rotatable_bonds)
             
     @property
     def fragments(self):
-        return [Fragment(
-                self.fragment_mols[i], 
-                self.fragment_rotamer_bond[i], 
-                self.get_dihedral_quartet_from_bond(self.fragment_mols[i], self.fragment_rotamer_bond[i]),
-                self.mapping_dict[i],
-                Chem.GetFormalCharge(self.fragment_mols[i])
-            ) for i in range(len(self.fragment_mols))]
+        if hasattr(self, '_fragments'):
+            return self._fragments
+        else:
+            self.fragmentize()
+            return self._fragments
     
-    def get_fragment_rotamer_bond(self):
-        return self.fragment_rotamer_bond
+    # def get_fragment_rotamer_bond(self):
+    #     return self.fragment_rotamer_bond
     
-    def get_mapping_dict(self):
-        return self.mapping_dict
+    # def get_mapping_dict(self):
+    #     return self.mapping_dict
     
     def _get_fragment_atom_mapping(self):
+        """
+        Deprecated. Because `map_atoms` function is too slow for large molecules.
+        We can infer the atom mapping from the fragmentation. 
+        """
+        logger.info("Getting fragment atom mapping.")
         self.fragment_atom_mapping = []
         for fragment_mol in self.fragment_mols:
             self.fragment_atom_mapping.append(map_atoms(self.mol, fragment_mol))
@@ -249,7 +252,6 @@ class TorsionFragmentizer:
         else:
             self._get_fragment_atom_mapping()
             return self.fragment_atom_mapping
-
 
     def fragment_on_bonds(self, bonds):
         """
@@ -273,11 +275,28 @@ class TorsionFragmentizer:
             5. N, O and S are capped with methyl. All other open valence atoms are capped with hydrogen
             6. We ignore the ELF10 WBO threshold for the fragmenting step mentioned in Ref[1].
         """
-        fragment_list = []
-        for bond in bonds:
-            fragment_list.append(self.fragment_on_bond(bond[0], bond[1]))
-        return fragment_list
+        fragments = []
         
+        for bond in bonds:
+            fragment_mol = self.fragment_on_bond(bond[0], bond[1])            
+            parent_frgament_mapping = {}
+            for i, atom in enumerate(fragment_mol.GetAtoms()):
+                if atom.HasProp("_ParentIndex"):
+                    parent_frgament_mapping[int(atom.GetProp("_ParentIndex"))] = i
+            
+            fragment_rotamer_bond = (parent_frgament_mapping[bond[0]], parent_frgament_mapping[bond[1]])
+            
+            fragment = Fragment(
+                fragment_mol, 
+                fragment_rotamer_bond, 
+                self.get_dihedral_quartet_from_bond(fragment_mol, fragment_rotamer_bond),
+                parent_frgament_mapping,
+                Chem.GetFormalCharge(fragment_mol)
+            )
+            fragments.append(fragment)
+        
+        return fragments
+                
     def fragment_on_bond(self, atomIdx1: int, atomIdx2: int):
         """
         Fragmentize molecule on a single bond
@@ -326,6 +345,7 @@ class TorsionFragmentizer:
         logger.info(f"Atom list after excluding aromatic bonds: {atom_list}")
         atom_list = self.exclude_breaking_heteroatom_pairs(self.mol, atom_list)
         logger.info(f"Atom list after excluding heteroatom pairs: {atom_list}")
+        atom_list.sort()
         
         breaking_bond_idx_list, breaking_bond_type_list = self.find_breaking_bonds(self.mol, atom_list)
         
@@ -341,6 +361,11 @@ class TorsionFragmentizer:
             frags=frags_assigned, fragsMolAtomMapping=frags_mol_atom_mapping)
         
         edit = Chem.RWMol(frags_mols[frags_assigned[atom_list[0]]])
+        for new_index, original_index in enumerate(atom_list):
+            assert original_index == frags_mol_atom_mapping[frags_assigned[atom_list[0]]][new_index], \
+                f"{original_index} != {frags_mol_atom_mapping[frags_assigned[atom_list[0]]][new_index]}"
+            edit.GetAtomWithIdx(new_index).SetProp("_ParentIndex", str(original_index))
+        
         methyl_caps = []
         for atom in edit.GetAtoms():
             if atom.GetSymbol() == '*':
@@ -367,14 +392,6 @@ class TorsionFragmentizer:
         if self.cap_methylation:
             logger.info(f"Added {len(methyl_caps)} methyl groups.")
         for atom in edit.GetAtoms():
-            # set explicit hydroms
-            # if atom.GetIdx() not in methyl_caps:
-            #     atom.SetNumExplicitHs(0)
-            #     atom.SetNoImplicit(True)
-            # else:
-            #     atom.SetNumExplicitHs(3)
-            #     atom.SetNoImplicit(True)
-            
             if atom.HasProp("_NumHs"):
                 print("Cap", atom.GetIdx(), atom.GetProp("_NumHs"), atom.GetSymbol())
                 atom.SetNumExplicitHs(int(atom.GetProp("_NumHs")))
@@ -382,10 +399,15 @@ class TorsionFragmentizer:
             else:
                 atom.SetNumExplicitHs(0)
                 atom.SetNoImplicit(True)
-                
+        
+        # replace PH4 by CH3
         fragment = edit.GetMol()
         fragment.UpdatePropertyCache(strict=False)
-
+        fragment = Chem.ReplaceSubstructs(fragment, 
+                                 Chem.MolFromSmarts('[P;H4]'), 
+                                 Chem.MolFromSmiles('C'),
+                                 replaceAll=True)[0]
+        
         for atom in fragment.GetAtoms():
             if not atom.IsInRing():
                 if atom.GetIsAromatic():
@@ -400,15 +422,17 @@ class TorsionFragmentizer:
         fragment = Chem.AddHs(fragment)
         Chem.SanitizeMol(fragment)
         
-        # from rdkit.Chem import Draw
-        # import copy
-        # imgmol = copy.deepcopy(fragment)
-        # AllChem.Compute2DCoords(imgmol)
-        # img = Draw.MolToImage(imgmol)
-        # img.save("fragment.png")
+        if os.environ.get("DEBUG", False):
+            from rdkit.Chem import Draw
+            import copy
+            imgmol = copy.deepcopy(fragment)
+            AllChem.Compute2DCoords(imgmol)
+            img = Draw.MolToImage(imgmol)
+            img.save(f"fragment_{atomIdx1}_{atomIdx2}.png")
         
         logger.info(f"Fragment owns charge: {Chem.GetFormalCharge(fragment)}")
-        Chem.rdDetermineBonds.DetermineBondOrders(fragment, charge=Chem.GetFormalCharge(fragment))
+        if self.determine_bond_orders:
+            Chem.rdDetermineBonds.DetermineBonds(fragment, charge=Chem.GetFormalCharge(fragment))
         AllChem.EmbedMolecule(fragment, randomSeed=20240519)
         AllChem.MMFFOptimizeMolecule(fragment)
         
@@ -436,6 +460,15 @@ class TorsionFragmentizer:
         for i in range(len(breaking_bond_idx_list)):
             bond = mol.GetBonds()[breaking_bond_idx_list[i]]
             bond_partner_idx = [bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()]
+            if 15 in [mol.GetAtomWithIdx(j).GetAtomicNum() for j in bond_partner_idx]:
+                logger.info(f"Found breaking bond containing phosphorus")
+                atom_in_list_index = np.where([j in atom_list for j in bond_partner_idx])[0].item()
+                if mol.GetAtomWithIdx(atom_in_list_index).GetAtomicNum() == 15:
+                    atom_list = merge_list(atom_list, bond_partner_idx)
+                    continue
+                else:
+                    continue
+            
             if all([mol.GetAtomWithIdx(j).GetAtomicNum() not in [5, 6, 1] for j in bond_partner_idx]):
                 atom_list = merge_list(atom_list, bond_partner_idx)
         return atom_list
@@ -451,7 +484,6 @@ class TorsionFragmentizer:
                     breaking_bond_idx_list.append(bond.GetIdx())
                     breaking_bond_type_list.append(bond.GetBondType())
         return breaking_bond_idx_list, breaking_bond_type_list
-        
     
     def get_dihedral_quartet_from_bond(self, mol: Chem.rdchem.Mol, bond: Union[Tuple[int, int], List[int]]):
         """
@@ -459,8 +491,8 @@ class TorsionFragmentizer:
         """
         dihedral_quartet = {
             "hetereo-hetereo": [],  # heteroatom - heteroatom
-            "hetereo-carbon": [],  # heteroatom - carbon
-            "carbon-carbon": [],  # carbon - carbon
+            "hetereo-carbon": [],   # heteroatom - carbon
+            "carbon-carbon": [],    # carbon - carbon
         }
         atom1 = mol.GetAtomWithIdx(bond[0])
         atom2 = mol.GetAtomWithIdx(bond[1])
@@ -540,7 +572,6 @@ class C5Fragmentizer:
             if len(matches) != 0:
                 self.terminal_matches.extend(list(matches))
         self.terminal_matches = flatten_list(self.terminal_matches)
-        
     
     def get_rotatable_bonds(self):
         rotatable_bond = Chem.MolFromSmarts(self.rotatable_bonds_smarts)
