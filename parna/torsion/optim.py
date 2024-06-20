@@ -34,11 +34,19 @@ class TorsionOptimizer(nn.Module):
         cos_val = (1. + torch.cos( dihedrals * self.periodicity - self.phase )) * self.k
         return cos_val.sum(dim=-1)
     
-    def loss_weighted(self, energy_pred, energy_true):
-        weights = self.weight_function(energy_true)      
-        energy_pred = energy_pred - energy_pred.min()
-        energy_true = energy_true - energy_true.min()
-        return torch.sum(weights * (energy_pred - energy_true)**2) / torch.sum(weights) + self.panelty_weight * torch.sum(torch.abs(self.k))
+    def loss_weighted(self, energy_pred, energy_true, pairwise=False):
+        weights = self.weight_function(energy_true)   
+        
+        if not pairwise:
+            energy_pred = energy_pred - energy_pred.min()
+            energy_true = energy_true - energy_true.min()
+            return torch.sum(weights * (energy_pred - energy_true)**2) / torch.sum(weights) + self.panelty_weight * torch.sum(torch.abs(self.k))
+        else:
+            pairwise_rel_energy_pred = energy_pred.reshape(-1,1) - energy_pred.reshape(1,-1)
+            pairwise_rel_energy_true = energy_true.reshape(-1,1) - energy_true.reshape(1,-1)
+            pairwise_weights = (weights.reshape(-1,1) * weights.reshape(1,-1)) ** 0.5
+            loss = torch.sum(pairwise_weights * (pairwise_rel_energy_pred - pairwise_rel_energy_true)**2) / torch.sum(pairwise_weights)
+            return loss + self.panelty_weight * torch.sum(torch.abs(self.k))
     
     def loss(self, energy_pred, energy_true):
         energy_pred = energy_pred - energy_pred.min()
@@ -62,7 +70,8 @@ class TorsionOptimizer(nn.Module):
                  energy_qm: torch.Tensor, 
                  n_iter: int = 5000, 
                  lr: float = 1e-3, 
-                 weighted: bool = True):
+                 weighted: bool = True,
+                 pairwise: bool = False):
         """Optimize the torsion angles. All inputs are torch.Tensor.
         
         Input:
@@ -78,7 +87,7 @@ class TorsionOptimizer(nn.Module):
             energy_mm_pred = energy_mm+energy_pred.flatten()
             
             if weighted:
-                loss = self.loss_weighted(energy_mm_pred, energy_qm)
+                loss = self.loss_weighted(energy_mm_pred, energy_qm, pairwise=pairwise)
             else:
                 loss = self.loss(energy_pred, energy_qm)
             loss.backward()
@@ -90,11 +99,11 @@ class TorsionOptimizer(nn.Module):
                          dihedrals: np.ndarray,
                          energy_mm: np.ndarray,
                          energy_qm: np.ndarray,
-        ):
+                         pairwise: bool = False):
         dihedral_tensor = torch.from_numpy(dihedrals).float().reshape(-1,1)
         energy_mm_tensor = torch.from_numpy(energy_mm).float().flatten()
         energy_qm_tensor = torch.from_numpy(energy_qm).float().flatten()
-        self.optimize(dihedral_tensor, energy_mm_tensor, energy_qm_tensor)
+        self.optimize(dihedral_tensor, energy_mm_tensor, energy_qm_tensor, weighted=True, pairwise=pairwise)
         # drop k if it is less than 1e-2
         if torch.all(torch.abs(self.k) > self.threshold):
             return self.k.detach().numpy()

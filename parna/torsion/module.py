@@ -179,7 +179,7 @@ class TorsionFactory(MoleculeFactory):
             dsc = DihedralScanner(
                 input_file=output_dir/f"fragment{vi}/fragment.pdb", 
                 dihedrals=[vfrag["fragment"].pivotal_dihedral_quartet[0]],
-                charge=0,
+                charge=vfrag["fragment"].charge,
                 workdir=output_dir/f"fragment{vi}",
                 conformer_prefix=f"frag_conformer",
             ) 
@@ -304,7 +304,8 @@ class TorsionFactory(MoleculeFactory):
             optimizer.infer_parameters(
                 dihedrals=dihedrals,
                 energy_mm=mm_energy,
-                energy_qm=qm_energy
+                energy_qm=qm_energy,
+                pairwise=True
             )
             self.parameter_set[vi] = optimizer.get_parameters()
             # parent_dihedral_index = [vfrag.fragment_parent_mapping[a] for a in vfrag.pivotal_dihedral_quartet[0]]
@@ -483,7 +484,7 @@ class AmberTorsionFactory(MoleculeFactory):
         dsc = DihedralScanner(
             input_file=str(output_dir/f"fragment.pdb"), 
             dihedrals=[self.fragment.pivotal_dihedral_quartet[0]],
-            charge=0,
+            charge=self.fragment.charge,
             workdir=str(output_dir),
             conformer_prefix=f"frag_conformer",
         ) 
