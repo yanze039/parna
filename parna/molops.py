@@ -150,7 +150,7 @@ class MoleculeFactory:
         """
         RESP_fragment(
             str(input_file),
-            charge,
+            int(charge),
             str(output_dir),
             self.mol_name,
             memory=self.memory, 
