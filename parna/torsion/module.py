@@ -1,7 +1,7 @@
 from .optim import TorsionOptimizer
 from .fragment import TorsionFragmentizer, C5Fragmentizer
 from .conf import DihedralScanner
-from parna.utils import rd_load_file, map_atoms, SLURM_HEADER_CPU, atomName_to_index
+from parna.utils import rd_load_file, map_atoms, SLURM_HEADER_CPU, atomName_to_index, inverse_mapping
 from parna.constant import Hatree2kCalPerMol
 from parna.qm.psi4_utils import read_energy_from_log
 from parna.qm.orca_utils import read_energy_from_txt
@@ -109,20 +109,63 @@ class TorsionFactory(MoleculeFactory):
         self.C1_index_parent = self.sugar_fragment_mapping[C1_index]
     
     def fragmentize(self, output_dir):
+        
         self.match_template()
         n_atom_mod = self.mol.GetNumAtoms()
         unique_atoms = [i for i in range(n_atom_mod) if i not in [a[1] for a in self.core_atoms]]
         TF = TorsionFragmentizer(self.mol, cap_methylation=self.cap_methylation, determine_bond_orders=self.determine_bond_orders)
         TF.fragmentize()
         self.valid_fragments = {}
+        """
+        self.valid_fragments = {
+            idx: {
+                "Inchi": str,
+                "mol": Chem.Mol,
+                "parent_rotatable_bond": list,
+            }
+        }
+        """
+        
         for idx, frag in enumerate(TF.fragments):
             dq = frag.pivotal_dihedral_quartet[0]
             if (np.any([frag.fragment_parent_mapping[a] in unique_atoms for a in dq])) or \
                         self.C1_index_parent in [frag.fragment_parent_mapping[a] for a in frag.rotatable_bond]:
+                
+                existed = False
+                # avoid duplicate fragments with the same parent rotatable bond
+                fragment_Inchi = Chem.MolToInchi(frag.mol)
+                for vfrag in self.valid_fragments.values():
+                    if fragment_Inchi == vfrag["Inchi"]:
+                        frag_vfrag_mapping_list = map_atoms(frag.mol, vfrag["fragment"].mol)
+                        frag_vfrag_mapping_dict = {}
+                        for atom in frag_vfrag_mapping_list:
+                            frag_vfrag_mapping_dict[atom[0]] = atom[1]
+                        vfrag_frag_mapping_dict = inverse_mapping(frag_vfrag_mapping_dict)
+                        _rotatable_bond_index = np.array(sorted([frag_vfrag_mapping_dict[a] for a in frag.rotatable_bond]))
+                        if np.all(_rotatable_bond_index == np.array(sorted(vfrag["fragment"].rotatable_bond))):
+                            existed = True
+                            vfrag["parent_rotatable_bond"].append(
+                                (frag.fragment_parent_mapping[frag.rotatable_bond[0]],
+                                frag.fragment_parent_mapping[frag.rotatable_bond[1]])
+                            )
+                            vfrag["parent_dihedral_index"].append(
+                                [frag.fragment_parent_mapping[vfrag_frag_mapping_dict[a]] for a in vfrag["fragment"].pivotal_dihedral_quartet[0]]
+                            )
+                            break
+                if existed:
+                    continue
+                
                 frag.save(str(output_dir/f"fragment{idx}"), format="pdb")
                 logger.info(f"Rotatable bond: {frag.rotatable_bond} is valid for fragment {idx}. Parent image: {[frag.fragment_parent_mapping[a] for a in frag.rotatable_bond]}")
                 logger.info(f"Fragment {idx} is saved to {str(output_dir/f'fragment{idx}')}")
-                self.valid_fragments[idx] = frag
+                self.valid_fragments[idx] = {
+                    "Inchi": fragment_Inchi,
+                    "fragment": frag,
+                    "parent_rotatable_bond": [(frag.fragment_parent_mapping[frag.rotatable_bond[0]], frag.fragment_parent_mapping[frag.rotatable_bond[1]])],
+                    "parent_dihedral_index": [[frag.fragment_parent_mapping[a] for a in frag.pivotal_dihedral_quartet[0]], ]
+                }
+                #  parent_dihedral_index = [vfrag.fragment_parent_mapping[a] for a in vfrag.pivotal_dihedral_quartet[0]]
+                     
         logger.debug(f"Valid fragments: {self.valid_fragments}")
                 
     def gen(self, submit=False, local=False, overwrite=False):
@@ -132,10 +175,10 @@ class TorsionFactory(MoleculeFactory):
         self.all_conformer_files = {}
         self.slurm_files = []
         for vi, vfrag in self.valid_fragments.items():
-            logger.info(f"Scanning dihedral {vfrag.pivotal_dihedral_quartet[0]}")
+            logger.info(f"Scanning dihedral {vfrag['fragment'].pivotal_dihedral_quartet[0]}")
             dsc = DihedralScanner(
                 input_file=output_dir/f"fragment{vi}/fragment.pdb", 
-                dihedrals=[vfrag.pivotal_dihedral_quartet[0]],
+                dihedrals=[vfrag["fragment"].pivotal_dihedral_quartet[0]],
                 charge=0,
                 workdir=output_dir/f"fragment{vi}",
                 conformer_prefix=f"frag_conformer",
@@ -146,47 +189,36 @@ class TorsionFactory(MoleculeFactory):
                 steps=self.scanning_steps,
                 overwrite=overwrite
             )
-            self.all_conformer_files[vi] = dsc.conformers[vfrag.pivotal_dihedral_quartet[0]]
+            self.all_conformer_files[vi] = dsc.conformers[vfrag["fragment"].pivotal_dihedral_quartet[0]]
         
-            for idx, conf in enumerate(dsc.conformers[vfrag.pivotal_dihedral_quartet[0]]):
+            for idx, conf in enumerate(dsc.conformers[vfrag["fragment"].pivotal_dihedral_quartet[0]]):
                 slurm_file = (output_dir/f"fragment{vi}/conf{idx}.slurm").resolve()
-                if vfrag.charge != 0:
-                    logger.warning(f"Fragment {vi} has charge {vfrag.charge}")
+                if vfrag["fragment"].charge != 0:
+                    logger.warning(f"Fragment {vi} has charge {vfrag['fragment'].charge}")
                     logger.warning(f"Please use appropriate QM methods for charged fragments")
-                if self.aqueous:
-                    self.write_script_aq(
-                        slurm_filename=slurm_file,
-                        input_file=str(conf),
-                        output_dir=(output_dir/f"fragment{vi}").resolve(),
-                        charge=vfrag.charge,
-                        local=local
-                    )
-                else:
-                    self.write_script(
-                        slurm_filename=slurm_file,
-                        input_file=str(conf),
-                        output_dir=(output_dir/f"fragment{vi}").resolve(),
-                        charge=vfrag.charge,
-                        local=local
-                    )
+                self.write_script(
+                    slurm_filename=slurm_file,
+                    input_file=str(conf),
+                    output_dir=(output_dir/f"fragment{vi}").resolve(),
+                    charge=vfrag["fragment"].charge,
+                    local=local,
+                    aqueous=self.aqueous
+                )
                 self.slurm_files.append(slurm_file)
                 
-                if not overwrite and ((os.path.exists(conf.with_suffix(".psi4.log")) and not self.aqueous) or (os.path.exists(conf.with_suffix(".molden")) and self.aqueous)):
+                if not overwrite and ((os.path.exists(conf.with_suffix(".psi4.log")) and not self.aqueous) \
+                    or (os.path.exists(conf.with_suffix(".molden")) and self.aqueous)):
                     continue
                 
+                cwd = Path.cwd().resolve()
+                os.chdir(output_dir)
                 if local:
-                    cwd = Path.cwd().resolve()
-                    os.chdir(output_dir)
                     logger.info(f"Running {slurm_file}")
                     os.system(f"bash {slurm_file}")
-                    os.chdir(cwd)
                 elif submit:
-                    cwd = Path.cwd().resolve()
-                    os.chdir(output_dir)
                     logger.info(f"Submiting {slurm_file}")
                     os.system(f"LLsub {slurm_file}")
-                    os.chdir(cwd)
-                
+                os.chdir(cwd)
         
     def optimize(self, overwrite=False):
         """
@@ -215,7 +247,7 @@ class TorsionFactory(MoleculeFactory):
             if overwrite or (not os.path.exists(charged_mol2)):
                 self.charge_molecule(
                     self.all_conformer_files[vi][0], 
-                    vfrag.charge, frag_dir
+                    vfrag["fragment"].charge, frag_dir
                 )
             else:
                 logger.info(f"File exised, using existing charge file {charged_mol2}.")
@@ -233,7 +265,7 @@ class TorsionFactory(MoleculeFactory):
             parm_mol = pmd.load_file(str(parm7))
             for idx, atom in enumerate(parm_mol.atoms):
                 atom.charge = charged_pmd_mol.atoms[idx].charge
-            idx_list = self.get_dihrdeal_terms_by_quartet(parm_mol, vfrag.pivotal_dihedral_quartet[0])
+            idx_list = self.get_dihrdeal_terms_by_quartet(parm_mol, vfrag["fragment"].pivotal_dihedral_quartet[0])
             for dih_idx in idx_list:
                 parm_mol.dihedrals[dih_idx].type.phi_k = 0.0
             logger.info(f'collecting QM and MM Energies for fragment {vi}')
@@ -275,8 +307,10 @@ class TorsionFactory(MoleculeFactory):
                 energy_qm=qm_energy
             )
             self.parameter_set[vi] = optimizer.get_parameters()
-            parent_dihedral_index = [vfrag.fragment_parent_mapping[a] for a in vfrag.pivotal_dihedral_quartet[0]]
-            self.parameter_set[vi]["dihedral"] = parent_dihedral_index
+            # parent_dihedral_index = [vfrag.fragment_parent_mapping[a] for a in vfrag.pivotal_dihedral_quartet[0]]
+            # self.parameter_set[vi]["dihedral"] = parent_dihedral_index
+            self.parameter_set[vi]["dihedral"] = vfrag["parent_dihedral_index"]
+            
             
         self.save_to_yaml(self.conformer_data, output_dir/"conformer_data.yaml")
         self.save_to_yaml(self.parameter_set, output_dir/"parameter_set.yaml")
@@ -285,8 +319,14 @@ class TorsionFactory(MoleculeFactory):
     def save_to_yaml(dict_data, yaml_file):
         with open(yaml_file, "w") as f:
             yaml.dump(dict_data, f)
+    
+    def write_script(self, slurm_filename, input_file, output_dir, charge, local=False, aqueous=False):
+        if aqueous:
+            self.write_script_aq(slurm_filename, input_file, output_dir, charge, local)
+        else:
+            self.write_script_gas(slurm_filename, input_file, output_dir, charge, local)
         
-    def write_script(self, slurm_filename, input_file, output_dir, charge, local=False):
+    def write_script_gas(self, slurm_filename, input_file, output_dir, charge, local=False):
         if local:
             slurm_content = "#!/bin/bash\n"
         else:
