@@ -88,9 +88,10 @@ def structure_optimization(pdbfile, charge, restrain_atom_list=None, workdir="xt
     
 
 def gen_multi_conformations(input_file, charge, work_dir, ewin=6, threads=48):
-    print(" ".join(["xtb", str(input_file), "--opt", "--gbsa", "h2o"]))
+    opt_command = ["xtb", str(Path(input_file).resolve()), "--opt", "--gbsa", "h2o", "--chrg", str(charge)]
+    print(" ".join(opt_command))
     subprocess.run(
-        ["xtb", str(Path(input_file).resolve()), "--opt", "--gbsa", "h2o"],
+        opt_command,
         cwd=work_dir,
     )
     subprocess.run(
