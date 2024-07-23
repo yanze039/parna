@@ -1,8 +1,10 @@
 import parmed as pmd
 import rdkit.Chem as Chem
+import rdkit.Chem.rdDetermineBonds as rdDetermineBonds
 from pathlib import Path
 import os
 import numpy as np
+import random
 
 from parna.utils import antechamber, atomName_to_index, map_atoms, rd_load_file, read_yaml
 from parna.molops import flexible_align
@@ -21,6 +23,8 @@ FRAME = Path(__file__).parent/"local_frame"
 
 O3_charge = -0.5246
 O5_charge = -0.4989
+O3_charge_3p = -0.6541
+HO3_charge_3p = 0.4376
 P_charge = 1.1662
 OP1_charge = -0.7760
 OP2_charge = -0.7760
@@ -129,7 +133,11 @@ def build_backbone(
     return myStructure
 
 
-def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype=None, residue_tail_idx=None, template_tail_idx=None):
+def build_residue_pdb_block(
+        input_file, residue_name, template_residue, atomtype=None, 
+        residue_tail_idx=None, template_tail_idx=None, only_heavy_atoms=True, 
+        atomCompare=Chem.rdFMCS.AtomCompare.CompareAnyHeavyAtom
+    ):
     logger.info(f"Building residue {residue_name} from {input_file} using template {template_residue}")
     rd_mol = rd_load_file(str(input_file), removeHs=False, atomtype=atomtype)
     if not "." in str(template_residue):
@@ -144,11 +152,16 @@ def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype
             backbone_local_frame=np.load(FRAME/f"N1_frame.npy"),
         )
     else:
-        rd_tmpl_block = Chem.MolFromPDBFile(str(template_residue), removeHs=False, sanitize=False)
+        if only_heavy_atoms:
+            rd_tmpl_block = Chem.MolFromPDBFile(str(template_residue), removeHs=True, sanitize=False)
+        else:
+            rd_tmpl_block = Chem.MolFromPDBFile(str(template_residue), removeHs=False, sanitize=False)
     # sanitize the molecule to update the ring-info, otherwise the atom mapping will fail.
     # Not sanitize --> RuntimeError: Pre-condition Violation, RingInfo not initialized.
     Chem.SanitizeMol(rd_tmpl_block)
-    atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True)
+    # atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, atomCompare=Chem.rdFMCS.AtomCompare.CompareAny)
+    atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, completeRingsOnly=True, atomCompare=atomCompare)
+    
     if residue_tail_idx is not None and template_tail_idx is not None:
         for i in range(len(atom_mapping)):
             atom_pair = atom_mapping[i]
@@ -182,8 +195,9 @@ def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype
     old_mol = pmd.load_file(str(input_file))
     for idx, atom in enumerate(pmd_mol.atoms):
         atom.name = old_mol.atoms[idx].name
-    pmd_mol.write_pdb("_tmp.pdb")
-    with open("_tmp.pdb", "r") as f:
+    tmp_pdb = f"{input_file.stem}_{residue_name}_{random.randint(100, 999)}_tmp.pdb"
+    pmd_mol.write_pdb(tmp_pdb)
+    with open(tmp_pdb, "r") as f:
         pdbblock = f.read()
     atom_list = []
     for line in pdbblock.split("\n"):
@@ -193,11 +207,11 @@ def build_residue_pdb_block(input_file, residue_name, template_residue, atomtype
         elif line.startswith("HETATM"):
             line = "ATOM  " + line[6:17] + f"{residue_name:>3}" + line[20:]
             atom_list.append(line)
-    os.remove("_tmp.pdb")
+    os.remove(tmp_pdb)
     return "\n".join(atom_list)
 
 
-def build_residue_without_phosphate(input_file, atom_name_mapping, residue_name, charge):
+def build_residue_without_phosphate(input_file, atom_name_mapping, residue_name, charge, terminal=None):
     antechamber(
         input_file=input_file, 
         input_type=input_file.suffix[1:], 
@@ -208,22 +222,43 @@ def build_residue_without_phosphate(input_file, atom_name_mapping, residue_name,
     )
     pmd_mol = pmd.load_file(str(input_file.parent/f"{residue_name}._amber.mol2"))
     pmd_mol.fix_charges()
-    pmd_mol.atoms[atom_name_mapping["O3'"]].charge = O3_charge
-    pmd_mol.atoms[atom_name_mapping["O3'"]].type = "OS"
-    pmd_mol.head = pmd_mol.atoms[atom_name_mapping["C5'"]]
-    pmd_mol.tail = pmd_mol.atoms[atom_name_mapping["O3'"]]
-    atom_delete = [
-        pmd_mol.atoms[atom_name_mapping["HO3'"]],
-        pmd_mol.atoms[atom_name_mapping["HO5'"]],
-        pmd_mol.atoms[atom_name_mapping["O5'"]]
-    ]
+    
+    
+    
+    if terminal == "3'":
+        pmd_mol.atoms[atom_name_mapping["O3'"]].charge = O3_charge_3p
+        pmd_mol.atoms[atom_name_mapping["HO3'"]].charge = HO3_charge_3p
+        pmd_mol.atoms[atom_name_mapping["O3'"]].type = "OH"
+        pmd_mol.head = pmd_mol.atoms[atom_name_mapping["C5'"]]
+        atom_delete = [
+            pmd_mol.atoms[atom_name_mapping["HO5'"]],
+            pmd_mol.atoms[atom_name_mapping["O5'"]]
+        ]
+    elif terminal == "5'":
+        pmd_mol.atoms[atom_name_mapping["O3'"]].charge = O3_charge
+        pmd_mol.atoms[atom_name_mapping["O3'"]].type = "OS"
+        pmd_mol.tail = pmd_mol.atoms[atom_name_mapping["O3'"]]
+        atom_delete = [
+            pmd_mol.atoms[atom_name_mapping["HO3'"]],
+        ]
+    else:
+        pmd_mol.atoms[atom_name_mapping["O3'"]].charge = O3_charge
+        pmd_mol.atoms[atom_name_mapping["O3'"]].type = "OS"
+        pmd_mol.head = pmd_mol.atoms[atom_name_mapping["C5'"]]
+        pmd_mol.tail = pmd_mol.atoms[atom_name_mapping["O3'"]]
+        atom_delete = [
+            pmd_mol.atoms[atom_name_mapping["HO3'"]],
+            pmd_mol.atoms[atom_name_mapping["HO5'"]],
+            pmd_mol.atoms[atom_name_mapping["O5'"]]
+        ]
     for atom in atom_delete:
         pmd_mol.delete_atom(atom)
+    
     os.remove(input_file.parent/f"{residue_name}._amber.mol2")
     return pmd_mol
 
 
-def build_residue_with_phosphate(input_file, atom_name_mapping, residue_name, charge):
+def build_residue_with_phosphate(input_file, atom_name_mapping, residue_name, charge, terminal=None):
     
     # align to template
     rd_mol = rd_load_file(input_file, removeHs=False)
@@ -258,8 +293,7 @@ def build_residue_with_phosphate(input_file, atom_name_mapping, residue_name, ch
     
     pmd_mol.atoms[atom_name_mapping["O5'"]].charge = O5_charge
     pmd_mol.atoms[atom_name_mapping["O5'"]].type = "OS"
-    pmd_mol.atoms[atom_name_mapping["O3'"]].charge = O3_charge
-    pmd_mol.atoms[atom_name_mapping["O3'"]].type = "OS"
+
     phosphate_mol = pmd.load_file(str(TEMPLATE/"sugar_template_with_PO3.pdb"))
     phosphate_template = pmd.modeller.residue.ResidueTemplate.from_residue(phosphate_mol.residues[0])
     
@@ -283,16 +317,27 @@ def build_residue_with_phosphate(input_file, atom_name_mapping, residue_name, ch
     pmd_mol.add_bond(pmd_mol.map["P"], pmd_mol.map["OP1"], 1)
     pmd_mol.add_bond(pmd_mol.map["P"], pmd_mol.map["OP2"], 1)
     
-    pmd_mol.tail = pmd_mol.atoms[atom_name_mapping["O3'"]]
     pmd_mol.head = pmd_mol.map["P"]
-    atom_delete = [
-        pmd_mol.atoms[atom_name_mapping["HO3'"]],
-        pmd_mol.atoms[atom_name_mapping["HO5'"]],
-    ]
+    if terminal == "3'":
+        pmd_mol.atoms[atom_name_mapping["O3'"]].charge = O3_charge_3p
+        pmd_mol.atoms[atom_name_mapping["HO3'"]].charge = HO3_charge_3p
+        pmd_mol.atoms[atom_name_mapping["O3'"]].type = "OH"
+        atom_delete = [
+            pmd_mol.atoms[atom_name_mapping["HO5'"]],
+        ]
+    else:
+        pmd_mol.atoms[atom_name_mapping["O3'"]].charge = O3_charge
+        pmd_mol.atoms[atom_name_mapping["O3'"]].type = "OS"
+        pmd_mol.tail = pmd_mol.atoms[atom_name_mapping["O3'"]]
+        atom_delete = [
+            pmd_mol.atoms[atom_name_mapping["HO3'"]],
+            pmd_mol.atoms[atom_name_mapping["HO5'"]],
+        ]
     for atom in atom_delete:
         pmd_mol.delete_atom(atom)
     os.remove(input_file.parent/f"{residue_name}._aligned._bk.mol2")
     os.remove(input_file.parent/f"{residue_name}._amber.mol2")
+    
     return pmd_mol
 
 
@@ -306,8 +351,9 @@ def make_fragment(
         residue_name,
         residue_type="with_phosphate",
         output_dir=".",
-        charge=0
-        
+        charge=0,
+        suffix="",
+        terminal=None
     ):
     input_file = Path(input_file)
     output_dir = Path(output_dir)
@@ -331,16 +377,20 @@ def make_fragment(
                     input_file, 
                     atom_name_mapping,
                     residue_name,
-                    charge=charge
+                    charge=charge,
+                    terminal=terminal
                 )
     elif residue_type == "with_phosphate":
         pmd_mol = build_residue_with_phosphate(
                     input_file, 
                     atom_name_mapping,
                     residue_name,
-                    charge=charge
+                    charge=charge,
+                    terminal=terminal
                 )
     elif residue_type == "cap":
+        if terminal == "3'":
+            raise ValueError("Cap residue should be 5' terminal")
         pmd_mol = build_residue_cap(
                     input_file, 
                     atom_name_mapping,
@@ -350,8 +400,8 @@ def make_fragment(
     else:
         raise ValueError("residue_type should be either 'without_phosphate', 'with_phosphate' or 'cap'")
     
-    pmd_mol.save(str(output_dir/f"{residue_name}.mol2"), overwrite=True)
-    pmd_mol.save(str(output_dir/f"{residue_name}.lib"), overwrite=True)
+    pmd_mol.save(str(output_dir/f"{residue_name}{suffix}.mol2"), overwrite=True)
+    pmd_mol.save(str(output_dir/f"{residue_name}{suffix}.lib"), overwrite=True)
     pmd_mol.to_structure().write_pdb(str(output_dir/f"{residue_name}.pdb"), use_hetatoms=False)
 
 
@@ -394,7 +444,8 @@ def replace_residue(oligo_pdb, residue_pdb, residue_id, output_file):
 def make_fragment_cap(
         input_file,
         residue_name,
-        output_dir
+        output_dir,
+        charge=-2
     ):
 
     input_file = Path(input_file)
@@ -408,6 +459,7 @@ def make_fragment_cap(
         output=str(amber_mol2_file), 
         atom_type="amber", 
         residue_name=residue_name,
+        charge=charge
     )
 
     pmd_mol = pmd.load_file(str(amber_mol2_file))
