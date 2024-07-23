@@ -3,7 +3,8 @@ import rdkit
 from rdkit.Chem import rdMolAlign
 from rdkit.Chem import rdMolTransforms
 from rdkit.Chem import Conformer
-from rdkit.Chem.rdForceFieldHelpers import UFFGetMoleculeForceField
+# BUG: UFF can't recognize high-valanced P and S atoms. 
+from rdkit.Chem.rdForceFieldHelpers import UFFGetMoleculeForceField, MMFFGetMoleculeForceField, MMFFGetMoleculeProperties
 # BUG: only when this import exists, UFFGetMoleculeForceField can be registered.
 from rdkit.Chem import ChemicalForceFields
 from parna.logger import getLogger
@@ -26,12 +27,13 @@ def flexible_align(mobile, template, atom_mapping=None, force_constant=100.0, ma
     if atom_mapping is None:
         atom_mapping = map_atoms(mobile, template)
     _ = rdMolAlign.AlignMol(mobile, template, atomMap=atom_mapping)
-    ff = UFFGetMoleculeForceField(mobile)
+    mp = MMFFGetMoleculeProperties(mobile)
+    ff = MMFFGetMoleculeForceField(mobile, mp)
     template_conf = template.GetConformer(0)
     for i_q, i_t in atom_mapping:
         p_t = template_conf.GetAtomPosition(i_t)
         pIdx = ff.AddExtraPoint(p_t.x, p_t.y, p_t.z, fixed=True) -1
-        ff.UFFAddDistanceConstraint(pIdx, i_q, False, 0., 0., force_constant)
+        ff.MMFFAddDistanceConstraint(pIdx, i_q, False, 0., 0., force_constant)
     ff.Initialize()
     logger.info("Constrained Energy minimization...")
     for it in range(max_iterations):

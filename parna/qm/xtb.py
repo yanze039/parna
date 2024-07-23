@@ -37,15 +37,20 @@ def write_xtb_input(dihedral_atoms, dihedral_angles, scan_atoms, scan_type="dihe
     return "\n".join(contents)
 
 
-def xtb(coord, inp, charge, workdir, solution="h2o", opt=True):
+def xtb(coord, inp=None, charge=0, workdir=".", solution="h2o", opt=True, opt_type=""):
     workdir = Path(workdir)
     coord = Path(coord)
-    inp = Path(inp)
+    
     xtbcommand = [
-        "xtb", str(coord.resolve()),  "--chrg", str(charge),"--input", str(inp.resolve()),
+        "xtb", str(coord.resolve()),  "--chrg", str(charge)
     ]
+    if inp is not None:
+        inp = Path(inp)
+        xtbcommand.append("--input")
+        xtbcommand.append(str(inp.resolve()))
     if opt:
         xtbcommand.append("--opt")
+        xtbcommand.append(opt_type)
     if solution is not None:
         xtbcommand.append("--gbsa")
         xtbcommand.append(solution)
@@ -64,8 +69,7 @@ def xtb(coord, inp, charge, workdir, solution="h2o", opt=True):
 
 
 def structure_optimization(pdbfile, charge, restrain_atom_list=None, workdir="xtb"):
-    
-    if restrain_atom_list is None:
+    if restrain_atom_list is not None:
         atom_string = ",".join([str(i) for i in restrain_atom_list])
         opt_inp = [
         "$fix",
@@ -89,7 +93,7 @@ def structure_optimization(pdbfile, charge, restrain_atom_list=None, workdir="xt
 
 def gen_multi_conformations(input_file, charge, work_dir, ewin=6, threads=48):
     opt_command = ["xtb", str(Path(input_file).resolve()), "--opt", "--gbsa", "h2o", "--chrg", str(charge)]
-    print(" ".join(opt_command))
+    logger.info(" ".join(opt_command))
     subprocess.run(
         opt_command,
         cwd=work_dir,

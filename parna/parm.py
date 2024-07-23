@@ -3,6 +3,7 @@ import parmed as pmd
 import os
 from parna.logger import getLogger
 from typing import List
+import shutil
 
 
 logger = getLogger("parna.parm")
@@ -187,9 +188,10 @@ def alchemical_parameterize(oligoFile1, oligoFile2, proteinFile=None, external_l
             logger.info("Atomtype check passed")
 
 
-def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_forcefield="gaff2", parm_set="parm10", atom_type="amber", sinitize=False):   
+def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_forcefield="gaff2", parm_set="parm10", atom_type="amber", sinitize=False):  
+    _mol2_file = Path(input_file).parent / (Path(input_file).stem + ".tmp.mol2") 
     if (not Path(input_file).suffix == ".mol2") or sinitize:
-        _mol2_file = Path(input_file).parent / (Path(input_file).stem + ".tmp.mol2")
+        
         command_antechamber = [
             "antechamber",
             "-fi", Path(input_file).suffix[1:],
@@ -203,7 +205,7 @@ def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_force
         logger.info(" ".join(command_antechamber))
         os.system(" ".join(command_antechamber))
     else:
-        _mol2_file = input_file
+        shutil.copy(input_file, _mol2_file)
     _output_file = Path(output_file).parent / ("_" + Path(output_file).stem + ".frcmod")
     command_major = [
         "parmchk2",
@@ -228,6 +230,8 @@ def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_force
     ]
     logger.info(" ".join(command_minor))
     os.system(" ".join(command_minor))
+    os.remove(_mol2_file)
+    os.remove(_output_file)
 
 
 if __name__ == "__main__":

@@ -73,7 +73,7 @@ def RESP_cap(
         residue_name,
         memory="160 GB", 
         n_threads=48, 
-        method_basis="HF/6-31G*",
+        method_basis="HF/6-31+G*",
         restraint_template=None
     ):
     TEMPLATE = Path(__file__).parent.parent/"template"

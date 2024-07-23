@@ -6,7 +6,7 @@ import os
 import parmed as pmd
 import numpy as np
 import yaml
-
+import random
 
 SLURM_HEADER_CPU = """#!/bin/bash
 source /etc/profile
@@ -28,7 +28,7 @@ def rd_load_file(
     ):
     """Load a file into RDKit `Chem.mol` object.
     """
-    infile = Path(infile)
+    infile = Path(Path(infile).resolve())
     if infile.suffix == ".pdb":
         mol = Chem.MolFromPDBFile(str(infile), removeHs=removeHs, sanitize=sanitize)
         Chem.rdDetermineBonds.DetermineConnectivity(mol)
@@ -38,7 +38,7 @@ def rd_load_file(
             PeriodicTable = Chem.GetPeriodicTable()
             for atom in pmd_mol.atoms:
                 atom.type = PeriodicTable.GetElementSymbol(atom.element)
-            tmp_file = str(f"{infile.parent/Path(infile).stem}._tmp.mol2")
+            tmp_file = str(f"{infile.parent/Path(infile).stem}._tmp.{random.randint(1000, 9999)}.mol2")
             pmd_mol.save(tmp_file, overwrite=True)
             mol = Chem.MolFromMol2File(tmp_file, removeHs=removeHs, sanitize=sanitize)
             os.remove(tmp_file)
@@ -67,12 +67,14 @@ def atomName_to_index(mol):
     return atomName_to_index
 
 
-def map_atoms(template, query, ringMatchesRingOnly=False, bondCompare=rdFMCS.BondCompare.CompareAny, completeRingsOnly=False):
+def map_atoms(template, query, ringMatchesRingOnly=False, \
+    bondCompare=rdFMCS.BondCompare.CompareAny, completeRingsOnly=False, atomCompare=rdFMCS.AtomCompare.CompareElements):
     mcs = rdFMCS.FindMCS(
             [template, query], 
             ringMatchesRingOnly=ringMatchesRingOnly,  # PDB doesn't have ring information
          bondCompare=bondCompare,  # PDB doesn't have bond order,
-         completeRingsOnly=completeRingsOnly
+         completeRingsOnly=completeRingsOnly,
+         atomCompare=atomCompare
     )
     patt = Chem.MolFromSmarts(mcs.smartsString)
     template_Match = template.GetSubstructMatch(patt)
@@ -126,6 +128,9 @@ def read_yaml(YamlFile):
 
 def list2string(alist, delimiter=","):
     return delimiter.join([str(i) for i in alist])
+
+def get_dict_map(data: list):
+    return {i: j for i, j in data}
 
 def remove_ter(pdbFile, outFile):
     with open(pdbFile, "r") as f:

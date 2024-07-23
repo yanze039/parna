@@ -42,7 +42,8 @@ class TorsionFactory(MoleculeFactory):
             cap_methylation: bool = True,
             aqueous: bool = False,
             fix_phase: bool = True,
-            determine_bond_orders: bool = False
+            determine_bond_orders: bool = False,
+            pairwise: bool = False
         ):
         super().__init__(
             mol_name=mol_name,
@@ -59,6 +60,7 @@ class TorsionFactory(MoleculeFactory):
         self.aqueous = aqueous
         self.fix_phase = fix_phase
         self.determine_bond_orders = determine_bond_orders
+        self.pairwise = pairwise
         
         self.mol = None
         if template in ["A", "U", "G", "C"]:
@@ -266,6 +268,7 @@ class TorsionFactory(MoleculeFactory):
             for idx, atom in enumerate(parm_mol.atoms):
                 atom.charge = charged_pmd_mol.atoms[idx].charge
             idx_list = self.get_dihrdeal_terms_by_quartet(parm_mol, vfrag["fragment"].pivotal_dihedral_quartet[0])
+            assert len(idx_list) > 0, f"No dihedral term found for fragment {vi}." 
             for dih_idx in idx_list:
                 parm_mol.dihedrals[dih_idx].type.phi_k = 0.0
             logger.info(f'collecting QM and MM Energies for fragment {vi}')
@@ -284,7 +287,7 @@ class TorsionFactory(MoleculeFactory):
                 else:
                     log_file = conf.with_suffix(".psi4.log")
                     qm_energy = read_energy_from_log(log_file)
-                dihedrals.append(float(parm_mol.dihedrals[dih_idx].measure() / 180.0 * np.pi))
+                dihedrals.append(float(parm_mol.dihedrals[idx_list[0]].measure() / 180.0 * np.pi))
                 mm_energies.append(mm_energy_dict["total"])
                 qm_energies.append(qm_energy * Hatree2kCalPerMol)
                 conf_names.append(conf.stem)
@@ -305,7 +308,7 @@ class TorsionFactory(MoleculeFactory):
                 dihedrals=dihedrals,
                 energy_mm=mm_energy,
                 energy_qm=qm_energy,
-                pairwise=True
+                pairwise=self.pairwise
             )
             self.parameter_set[vi] = optimizer.get_parameters()
             # parent_dihedral_index = [vfrag.fragment_parent_mapping[a] for a in vfrag.pivotal_dihedral_quartet[0]]
