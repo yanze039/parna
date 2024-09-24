@@ -37,10 +37,13 @@ def parameterize(oligoFile, proteinFile=None, external_libs=[],
     
     leap_content = []
     frcmod = FRCMOD / "ol3_gaff2.frcmod"
+    atom_type_def = FRCMOD / "atom_type_def.in"
+    with open(atom_type_def, "r") as fp:
+        leap_content.extend(fp.readlines())
+    leap_content.append(f"loadAmberParams {(frcmod).resolve()}")
     leap_content.append(f"source leaprc.protein.ff14SB")
     leap_content.append(f"source leaprc.RNA.OL3")
     leap_content.append(f"source leaprc.water.tip3p")
-    leap_content.append(f"loadAmberParams {(frcmod).resolve()}")
     if isinstance(additional_frcmods, str) or isinstance(additional_frcmods, Path):
         additional_frcmods = [additional_frcmods]
     for fd in additional_frcmods:
