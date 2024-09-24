@@ -116,7 +116,6 @@ class XTB:
         self, 
         force_constant: float = 0.05
     ):
-        self.ops = []
         self.constraint = False
         self.constraint_list = []
         self.scan = False
@@ -124,14 +123,14 @@ class XTB:
         self.scan_list = []
     
     def clear(self):
-        self.ops = []
         self.constraint = False
         self.constraint_list = []
         self.scan = False
         self.scan_list = []
-        
-    def add(self, op):
-        self.ops.append(op)
+    
+    def clear_constraints(self):
+        self.constraint = False
+        self.constraint_list = []
     
     def set_force_constant(self, force_constant):
         self.force_constant = force_constant

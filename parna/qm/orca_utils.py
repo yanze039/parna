@@ -21,7 +21,7 @@ class EngineORCA(object):
             charge=0,
             orca_input_file="mol.inp"
     ):
-        content = []
+        content = ["!MiniPrint"]
         content.append(f"!{basis} {method}")
         if solvent is not None:
             content.append(f"!CPCM({solvent})")

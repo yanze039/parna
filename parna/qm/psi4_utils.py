@@ -23,7 +23,7 @@ def mk_psi4_geometry(atom_names: List[str], coords: np.ndarray, charge: int, mul
     ret = f"{charge} {mult}\n"
     for name, coord in zip(atom_names, coords):
         ret += f"{name} {coord[0]:>10.6f} {coord[1]:>10.6f} {coord[2]:>10.6f}\n"
-    print(ret)
+    # print(ret)
     mol = psi4.geometry(ret)
     return mol
 
