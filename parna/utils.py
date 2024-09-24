@@ -181,3 +181,52 @@ def split_xyz_file(input_file_path, output_folder, every_frame=1, output_prefix=
             individual_xyz_file.writelines(conformer_data)
 
 
+def select_from_list(alist, n, method="random"):
+    if method == "random":
+        return random.sample(alist, n)
+    elif method == "first":
+        return alist[:n]
+    elif method == "last":
+        return alist[-n:]
+    elif method == "even":
+        interval = len(alist) // n
+        return alist[::interval]
+    else:
+        raise ValueError(f"Invalid method: {method}")
+
+def get_suger_picker_angles_from_pseudorotation(phase, intensity, phase_fmt="degree"):
+    """
+    Get the sugar pucker angles from the pseudorotation phase and intensity.
+    Phase in degree, intensity in percentage.
+    
+    Return:
+        - dih1: v1 angle (O4'-C1'-C2'-C3')
+        - dih2: v3 angle (C2'-C3'-C4'-O4')
+    """
+    # convert degree to radian
+    if phase_fmt == "degree":
+        phase = np.radians(phase)
+    
+    while phase < 0:
+        phase += np.pi*2
+    while phase > np.pi*2:
+        phase -= np.pi*2
+    
+    tp = np.tan(phase)
+    Zx = np.sqrt(intensity**2 / (1 + tp**2))
+    
+    if phase > np.pi/2 and phase < np.pi*3/2:
+        Zx *= -1.
+    Zy = tp * Zx
+    dih1 = Zx * np.cos(4*np.pi/5) + Zy * np.sin(4*np.pi/5)
+    dih2 = Zx * np.cos(4*np.pi/5) - Zy * np.sin(4*np.pi/5)
+    
+    if phase_fmt == "degree":
+        dih1 = np.degrees(dih1)
+        dih2 = np.degrees(dih2)
+    
+    return dih1, dih2
+
+def save_to_yaml(dict_data, yaml_file):
+    with open(yaml_file, "w") as f:
+        yaml.dump(dict_data, f)

@@ -10,6 +10,7 @@ from pathlib import Path
 import pathlib
 from pathlib import PosixPath
 import yaml
+import copy
 
 
 def posix_path_constructor(loader, node):
@@ -58,6 +59,7 @@ BOND_ORDERS = {
     Chem.BondType.SINGLE: 1.0,
     Chem.BondType.DOUBLE: 2.0,
     Chem.BondType.TRIPLE: 3.0,
+    Chem.BondType.AROMATIC: 1.0  # Aromatic bond is considered as single bond
 }
 
 
@@ -93,6 +95,10 @@ class Fragment:
             return self.dihedral_quartets["carbon-carbon"]
         else:
             return None
+    
+    @property
+    def all_dihedral_quartets(self):
+        return self.dihedral_quartets["all"]
     
     @property
     def fragment_parent_mapping(self):
@@ -145,9 +151,10 @@ class TorsionFragmentizer:
                  cap_methylation : bool = True,
                  rotatable_bonds_smarts : str ="[!D1&!$(*#*)]-&!@[!D1&!$(*#*)]",
                  non_14_hydrogen: bool = True,
-                 determine_bond_orders: bool = True
+                 determine_bond_orders: bool = True,
+                 break_aromatic_ring: bool = True
                  ):
-        self.mol = mol
+        self.mol = copy.deepcopy(mol)
         self.rotatable_bonds_smarts = rotatable_bonds_smarts
         self.cap_methylation = cap_methylation
         self.sssr = [list(r) for r in Chem.GetSymmSSSR(self.mol)]
@@ -169,6 +176,7 @@ class TorsionFragmentizer:
         self.terminal_matches = flatten_list(self.terminal_matches)
         self.non_14_hydrogen = non_14_hydrogen
         self.determine_bond_orders = determine_bond_orders
+        self.break_aromatic_ring = break_aromatic_ring
         
     def get_sssr(self):
         return self.sssr
@@ -276,30 +284,33 @@ class TorsionFragmentizer:
             6. We ignore the ELF10 WBO threshold for the fragmenting step mentioned in Ref[1].
         """
         fragments = []
-        
         for bond in bonds:
-            fragment_mol = self.fragment_on_bond(bond[0], bond[1])            
-            parent_frgament_mapping = {}
-            for i, atom in enumerate(fragment_mol.GetAtoms()):
-                if atom.HasProp("_ParentIndex"):
-                    parent_frgament_mapping[int(atom.GetProp("_ParentIndex"))] = i
-            
-            fragment_rotamer_bond = (parent_frgament_mapping[bond[0]], parent_frgament_mapping[bond[1]])
-            
-            fragment = Fragment(
-                fragment_mol, 
-                fragment_rotamer_bond, 
-                self.get_dihedral_quartet_from_bond(fragment_mol, fragment_rotamer_bond),
-                parent_frgament_mapping,
-                Chem.GetFormalCharge(fragment_mol)
-            )
+            fragment = self.fragment_on_bond(bond[0], bond[1])            
             fragments.append(fragment)
-        
         return fragments
+    
+    
+    def fragment_on_bond(self, atomIdx1: int, atomIdx2: int, keep_tagged_atoms: bool = True):
+        fragment_mol = self._fragment_on_bond(atomIdx1, atomIdx2, keep_tagged_atoms=keep_tagged_atoms)            
+        parent_frgament_mapping = {}
+        for i, atom in enumerate(fragment_mol.GetAtoms()):
+            if atom.HasProp("_ParentIndex"):
+                parent_frgament_mapping[int(atom.GetProp("_ParentIndex"))] = i
+        
+        fragment_rotamer_bond = (parent_frgament_mapping[atomIdx1], parent_frgament_mapping[atomIdx2])
+        
+        fragment = Fragment(
+            fragment_mol, 
+            fragment_rotamer_bond, 
+            self.get_dihedral_quartet_from_bond(fragment_mol, fragment_rotamer_bond),
+            parent_frgament_mapping,
+            Chem.GetFormalCharge(fragment_mol)
+        )
+        return fragment
                 
-    def fragment_on_bond(self, atomIdx1: int, atomIdx2: int):
+    def _fragment_on_bond(self, atomIdx1: int, atomIdx2: int, keep_tagged_atoms: bool = True):
         """
-        Fragmentize molecule on a single bond
+        Fragmentize molecule on a single bond. Return the RDMol object.
         """ 
         logger.info(f"Fragmentizing molecule on bond:  {atomIdx1}, {atomIdx2}")
         # rule 1 get the bond
@@ -341,10 +352,20 @@ class TorsionFragmentizer:
             return self.mol
         
         # find the bonds to break
-        atom_list = self.exclude_breaking_aromatic_bonds(self.mol, atom_list)
-        logger.info(f"Atom list after excluding aromatic bonds: {atom_list}")
+        if not self.break_aromatic_ring:
+            atom_list = self.exclude_breaking_aromatic_bonds(self.mol, atom_list)
+            logger.info(f"Atom list after excluding aromatic bonds: {atom_list}")
         atom_list = self.exclude_breaking_heteroatom_pairs(self.mol, atom_list)
         logger.info(f"Atom list after excluding heteroatom pairs: {atom_list}")
+        
+        if keep_tagged_atoms:
+            for atom in self.mol.GetAtoms():
+                if atom.HasProp("_keep_at_fragment"):
+                    if atom.GetProp("_keep_at_fragment") == "1":
+                        if atom.GetIdx() not in atom_list:
+                            atom_list.append(atom.GetIdx())
+            logger.info(f"Atom list after keeping tagged atoms: {atom_list}")
+        
         atom_list.sort()
         
         breaking_bond_idx_list, breaking_bond_type_list = self.find_breaking_bonds(self.mol, atom_list)
@@ -371,24 +392,29 @@ class TorsionFragmentizer:
             if atom.GetSymbol() == '*':
                 
                 dummy_neighbor = atom.GetNeighbors()[0]
-                print("Cap Neighbor", dummy_neighbor.GetIdx(), dummy_neighbor.GetSymbol())
                 bond_type = edit.GetBondBetweenAtoms(atom.GetIdx(), dummy_neighbor.GetIdx()).GetBondType()
+                # print("Cap Neighbor", dummy_neighbor.GetIdx(), dummy_neighbor.GetSymbol())
+                # print("dummy Isotope", atom.GetIsotope())
+                # print("dummy Neighbor Isotope", dummy_neighbor.GetIsotope())
                 if self.cap_methylation and dummy_neighbor.GetAtomicNum() in [7, 8, 16]:
                     cap = Chem.Atom(6)
                     cap.SetProp("_Cap", "C")
                     cap.SetProp("_NumHs", str(int(4-BOND_ORDERS[bond_type])))
                     methyl_caps.append(atom.GetIdx())
                     edit.ReplaceAtom(atom.GetIdx(), cap, updateLabel=True, preserveProps=False)
+                    if dummy_neighbor.GetAtomicNum() == 6:
+                        dummy_neighbor.SetProp("_NumHs", str(1))
                 else:
                     cap = Chem.Atom(1)
                     cap.SetProp("_Cap", "H")
+                    if self.mol.GetAtomWithIdx(atom.GetIsotope()).GetAtomicNum() == 1:
+                        cap.SetProp("_ParentIndex", str(atom.GetIsotope()))
                     if dummy_neighbor.HasProp("_NumHs"):
                         dummy_neighbor.SetProp("_NumHs", str(int(dummy_neighbor.GetProp("_NumHs"))+int(int(BOND_ORDERS[bond_type]-1))))
                     else:
                         dummy_neighbor.SetProp("_NumHs", str(int(BOND_ORDERS[bond_type]-1)))
                     edit.ReplaceAtom(atom.GetIdx(), cap, updateLabel=True, preserveProps=False)
                     edit.GetBondBetweenAtoms(dummy_neighbor.GetIdx(), atom.GetIdx()).SetBondType(Chem.BondType.SINGLE)
-
         if self.cap_methylation:
             logger.info(f"Added {len(methyl_caps)} methyl groups.")
         for atom in edit.GetAtoms():
@@ -493,6 +519,7 @@ class TorsionFragmentizer:
             "hetereo-hetereo": [],  # heteroatom - heteroatom
             "hetereo-carbon": [],   # heteroatom - carbon
             "carbon-carbon": [],    # carbon - carbon
+            "all" : []              # all atoms
         }
         atom1 = mol.GetAtomWithIdx(bond[0])
         atom2 = mol.GetAtomWithIdx(bond[1])
@@ -527,6 +554,14 @@ class TorsionFragmentizer:
         for carbon1 in neighbor1_dict["carbon"]:
             for carbon2 in neighbor2_dict["carbon"]:
                 dihedral_quartet["carbon-carbon"].append((carbon1.GetIdx(), atom1.GetIdx(), atom2.GetIdx(), carbon2.GetIdx()))
+        
+        for category1 in neighbor1_dict:
+            for category2 in neighbor2_dict:
+                for atom0 in neighbor1_dict[category1]:
+                    for atom3 in neighbor2_dict[category2]:
+                        dihedral_quartet["all"].append((atom0.GetIdx(), atom1.GetIdx(), atom2.GetIdx(), atom3.GetIdx()))
+        assert len(dihedral_quartet["all"]) > 0, "No dihedral quartet found."
+        
         return dihedral_quartet
 
     def save_fragments(self, filename: str = "fragments.sdf"):
@@ -690,3 +725,4 @@ class C5Fragmentizer:
             for carbon2 in neighbor2_dict["carbon"]:
                 dihedral_quartet["carbon-carbon"].append((carbon1.GetIdx(), atom1.GetIdx(), atom2.GetIdx(), carbon2.GetIdx()))
         return dihedral_quartet
+

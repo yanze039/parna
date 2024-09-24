@@ -2,23 +2,30 @@ import numpy as np
 import torch
 import torch.nn as nn
 from parna.logger import getLogger
+import random
 
 
 logger = getLogger(__name__)
 
 
 class TorsionOptimizer(nn.Module):
-    def __init__(self, order=4, panelty_weight=0.1, threshold=0.01, fix_phase=True):
+    def __init__(self, order=4, panelty_weight=0.1, threshold=0.01, fix_phase=True, n_dihedrals=1, seed=1106):
         super(TorsionOptimizer, self).__init__()
+        if seed is not None:
+            torch.manual_seed(seed)
+            random.seed(seed)
+            np.random.seed(seed)
         self.order = order
-        self.k = nn.Parameter(torch.zeros(size=(self.order,)).reshape(1,-1), requires_grad=True)
-        self.periodicity = torch.tensor([i + 1 for i in range(order)]).reshape(1,-1)
-        phase = torch.zeros((self.order,)).reshape(1,-1)
+        self.n_dihedrals = n_dihedrals
+        self.k = nn.Parameter(torch.zeros(size=(self.order*n_dihedrals,)).reshape(1, n_dihedrals, self.order), requires_grad=True)
+        self.periodicity = torch.zeros((self.order*n_dihedrals,)).reshape(1, n_dihedrals, self.order)
+        phase = torch.zeros((self.order*n_dihedrals,)).reshape(1, n_dihedrals, self.order)
         for i in range(self.order):
+            self.periodicity[0,:,i] = i + 1
             if i % 2 == 0:
-                phase[0,i] = 0
+                phase[0,:,i] = 0
             else:
-                phase[0,i] = np.pi
+                phase[0,:,i] = np.pi
         
         if fix_phase:
             self.phase = phase
@@ -32,7 +39,7 @@ class TorsionOptimizer(nn.Module):
     
     def forward(self, dihedrals):
         cos_val = (1. + torch.cos( dihedrals * self.periodicity - self.phase )) * self.k
-        return cos_val.sum(dim=-1)
+        return cos_val.sum(dim=(-1, -2))
     
     def loss(self, energy_pred, energy_true, pairwise=False, weighted=True):
         if weighted:
@@ -94,44 +101,46 @@ class TorsionOptimizer(nn.Module):
                          energy_mm: np.ndarray,
                          energy_qm: np.ndarray,
                          pairwise: bool = False):
-        dihedral_tensor = torch.from_numpy(dihedrals).float().reshape(-1,1)
         energy_mm_tensor = torch.from_numpy(energy_mm).float().flatten()
         energy_qm_tensor = torch.from_numpy(energy_qm).float().flatten()
-        self.optimize(dihedral_tensor, energy_mm_tensor, energy_qm_tensor, n_iter=6501, weighted=True, pairwise=pairwise)
+        # of shape (n_conformers, n_dihedrals, orders)
+        dihedral_tensor = torch.from_numpy(dihedrals).float().reshape(-1, self.n_dihedrals, 1)
+        
+        self.optimize(dihedral_tensor, energy_mm_tensor, energy_qm_tensor, n_iter=8501, weighted=True, pairwise=pairwise)
         # drop k if it is less than 1e-2
-        if torch.all(torch.abs(self.k) > self.threshold):
-            return self.k.detach().numpy()
-        else:
-            logger.info(self.get_parameters())
-            logger.info("Values of k are less than 1e-2. Dropping them and reoptimizing.")
-            new_k_set = []
-            new_phase = []
-            new_periodicity = []
-            for i in range(self.order):
-                if torch.abs(self.k[0,i]) >= self.threshold:
-                    new_k_set.append(self.k[0,i])
-                    new_phase.append(self.phase[0,i])
-                    new_periodicity.append(self.periodicity[0,i])
-            self.k = nn.Parameter(torch.tensor(new_k_set).reshape(1,-1), requires_grad=True)
-            if self.fix_phase:
-                self.phase = torch.tensor(new_phase).reshape(1,-1)
-            else:
-                self.phase = nn.Parameter(torch.tensor(new_phase).reshape(1,-1), requires_grad=True)
-            self.periodicity = torch.tensor(new_periodicity).reshape(1,-1)
-            self.optimize(dihedral_tensor, energy_mm_tensor, energy_qm_tensor, n_iter=3000)
+        # if torch.all(torch.abs(self.k) > self.threshold):
+        #     return self.k.detach().numpy()
+        # else:
+        #     logger.info(self.get_parameters())
+        #     logger.info("Values of k are less than 1e-2. Dropping them and reoptimizing.")
+        #     new_k_set = []
+        #     new_phase = []
+        #     new_periodicity = []
+        #     for i in range(self.order):
+        #         if torch.abs(self.k[0,i]) >= self.threshold:
+        #             new_k_set.append(self.k[0,i])
+        #             new_phase.append(self.phase[0,i])
+        #             new_periodicity.append(self.periodicity[0,i])
+        #     self.k = nn.Parameter(torch.tensor(new_k_set).reshape(1,-1), requires_grad=True)
+        #     if self.fix_phase:
+        #         self.phase = torch.tensor(new_phase).reshape(1,-1)
+        #     else:
+        #         self.phase = nn.Parameter(torch.tensor(new_phase).reshape(1,-1), requires_grad=True)
+        #     self.periodicity = torch.tensor(new_periodicity).reshape(1,-1)
+        #     self.optimize(dihedral_tensor, energy_mm_tensor, energy_qm_tensor, n_iter=5000)
         logger.info(f"FINAL Paremeters: {self.get_parameters()}")
     
     def get_parameters(self):
         if self.fix_phase:
             return {
-                "k": self.k.detach().numpy().flatten().tolist(),
-                "periodicity": self.periodicity.numpy().flatten().tolist(),
-                "phase": self.phase.numpy().flatten().tolist()
+                "k": self.k.reshape(self.n_dihedrals, self.order).detach().numpy().tolist(),
+                "periodicity": self.periodicity.reshape(self.n_dihedrals, self.order).numpy().tolist(),
+                "phase": self.phase.reshape(self.n_dihedrals, self.order).numpy().tolist()
             }
         else:
             return {
-                "k": self.k.detach().numpy().flatten().tolist(),
-                "periodicity": self.periodicity.numpy().flatten().tolist(),
-                "phase": self.phase.detach().numpy().flatten().tolist()
+                "k": self.k.reshape(self.n_dihedrals, self.order).detach().numpy().tolist(),
+                "periodicity": self.periodicity.reshape(self.n_dihedrals, self.order).numpy().tolist(),
+                "phase": self.phase.reshape(self.n_dihedrals, self.order).detach().numpy().tolist()
             }
 
