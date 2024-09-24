@@ -11,11 +11,6 @@ from parna.logger import getLogger
 logger = getLogger(__name__)
 
 
-logger.info("Checking existence of Multiwfn...")
-if not shutil.which("Multiwfn"):
-    raise FileNotFoundError("Multiwfn is not found in the PATH. Please install Multiwfn and add it to the PATH.")
-
-
 PeriodicTable = Chem.GetPeriodicTable()
 smartsStringPattern = {
     "NH2": "[#7X3H2]",
@@ -78,6 +73,11 @@ def readCharge(mol2File):
 
 
 def RESPStage1(fchk,  eqConstraints, chgConstraints, a, b,conf_list_file=None, n_proc=1, log_file="multiwfn.log", workdir=None):
+            
+    logger.info("Checking existence of Multiwfn...")
+    if not shutil.which("Multiwfn"):
+        raise FileNotFoundError("Multiwfn is not found in the PATH. Please install Multiwfn and add it to the PATH.")
+    
     multiwfn_script = ["7", "18"]
     # add equivalence constraints
     if eqConstraints is not None:
@@ -271,8 +271,8 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name, tightn
         assert charge_info["element"] == PeriodicTable.GetElementSymbol(atom.element)
         atom.charge = charge_info["charge"]
         atom.type   = PeriodicTable.GetElementSymbol(atom.element)
-    mol2.save(str(output_dir/f"{Path(input_file).stem}.mol2"), overwrite=True)
-    logger.info("File saved to: " + str(output_dir/f"{Path(input_file).stem}.mol2"))
+    mol2.save(str(output_dir/f"{Path(input_file).stem}.resp.mol2"), overwrite=True)
+    logger.info("File saved to: " + str(output_dir/f"{Path(input_file).stem}.resp.mol2"))
     logger.info(f"Charge fitting finished for {input_file}")
     os.remove(output_dir/f"{Path(input_file).stem}.tmp.mol2")
 

@@ -5,20 +5,9 @@ import os
 from parna.utils import rd_load_file, atomName_to_index, map_atoms
 from parna.qm.xtb import write_xtb_input, xtb
 from parna.logger import getLogger
+from parna.constant import dihedral_constraint_templates
 
 logger = getLogger(__name__)
-
-## dihedral angle constraints
-# O4'-C4'-C3'-C2' to -36 degree
-# C4'-C3'-O3'-H3T to -120 degree
-# C3'-C2'-O2'-HO2' to -120 degree
-# C4'-C5'-O5'-HO5' to 180 degree
-dihedral_constraint_templates = [
-    ["O4'", "C4'", "C3'", "C2'", -36.0],
-    ["C4'", "C3'", "O3'", "HO3'", -120.0],
-    ["C3'", "C2'", "O2'", "HO2'", -120.0],
-    ["C4'", "C5'", "O5'", "HO5'", 180.0]
-]
 
 
 def split_xyz_file(input_file_path, output_folder, output_prefix="conformer"):

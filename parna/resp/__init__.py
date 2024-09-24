@@ -9,6 +9,7 @@ from parna.qm.xtb import structure_optimization, gen_multi_conformations
 from parna.utils import map_atoms, rd_load_file, split_xyz_file
 import os
 import numpy as np
+from typing import List, Union
 
 logger = getLogger(__name__)
 
@@ -119,6 +120,43 @@ def RESP_cap(
     
 
 def RESP_fragment(
+        input_files: Union[str, List[str]],
+        charge,
+        output_dir,
+        residue_name,
+        memory="160 GB", 
+        n_threads=48, 
+        method_basis="HF/6-31G*",
+    ):
+    logger.info(f"RESP charging {input_files}...")
+    output_dir = Path(output_dir)  
+    
+    if type(input_files) == str:
+        conformers = [input_files]
+    else:
+        conformers = input_files
+    
+    for conformer_file in conformers:
+        calculate_energy(
+            conformer_file,
+            str(output_dir), 
+            charge=charge, 
+            memory=memory,
+            n_threads=n_threads,
+            method_basis=method_basis
+        )
+
+    fit_charges_frag(
+        input_file=conformers[0],
+        wfn_directory=str(output_dir), 
+        output_dir=str(output_dir), 
+        residue_name=residue_name, 
+        tightness=0.1,
+        wfn_file_type="fchk"
+    )
+
+
+def RESP_molecule(
         input_file,
         charge,
         output_dir,

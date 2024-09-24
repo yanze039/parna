@@ -10,12 +10,6 @@ from parna.logger import getLogger
 
 logger = getLogger(__name__)
 
-
-logger.info("Checking existence of Multiwfn...")
-if not shutil.which("Multiwfn"):
-    raise FileNotFoundError("Multiwfn is not found in the PATH. Please install Multiwfn and add it to the PATH.")
-
-
 PeriodicTable = Chem.GetPeriodicTable()
 smartsStringPattern = {
     "NH2": "[#7X3H2]",
@@ -78,6 +72,9 @@ def readCharge(mol2File):
 
 
 def RESPStage1(fchk,  eqConstraints, chgConstraints, a, b,conf_list_file=None, n_proc=1, log_file="multiwfn.log", workdir=None):
+    logger.info("Checking existence of Multiwfn...")
+    if not shutil.which("Multiwfn"):
+        raise FileNotFoundError("Multiwfn is not found in the PATH. Please install Multiwfn and add it to the PATH.")
     multiwfn_script = ["7", "18"]
     # add equivalence constraints
     if eqConstraints is not None:
