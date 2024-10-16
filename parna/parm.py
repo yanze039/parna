@@ -41,13 +41,13 @@ def parameterize(oligoFile, proteinFile=None, external_libs=[],
     with open(atom_type_def, "r") as fp:
         leap_content.extend(fp.readlines())
     leap_content.append(f"loadAmberParams {(frcmod).resolve()}")
-    leap_content.append(f"source leaprc.protein.ff14SB")
-    leap_content.append(f"source leaprc.RNA.OL3")
-    leap_content.append(f"source leaprc.water.tip3p")
     if isinstance(additional_frcmods, str) or isinstance(additional_frcmods, Path):
         additional_frcmods = [additional_frcmods]
     for fd in additional_frcmods:
         leap_content.append(f"loadAmberParams {(Path(fd)).resolve()}")
+    leap_content.append(f"source leaprc.protein.ff14SB")
+    leap_content.append(f"source leaprc.RNA.OL3")
+    leap_content.append(f"source leaprc.water.tip3p")
     residue_libs = list(LIB.glob("*.lib"))
     # internal libs
     for reslib in residue_libs:
@@ -121,14 +121,15 @@ def alchemical_parameterize(oligoFile1, oligoFile2, proteinFile=None, external_l
     
     leap_content = []
     frcmod = FRCMOD / "ol3_gaff2.frcmod"
-    leap_content.append(f"source leaprc.protein.ff14SB")
-    leap_content.append(f"source leaprc.RNA.OL3")
-    leap_content.append(f"source leaprc.water.tip3p")
     leap_content.append(f"loadAmberParams {(frcmod).resolve()}")
     if isinstance(additional_frcmods, str) or isinstance(additional_frcmods, Path):
         additional_frcmods = [additional_frcmods]
+    additional_frcmods.append(str(Path(__file__).parent / "data" / "frcmod.99bsc0-chiol3-CaseP.frcmod"))
     for fd in additional_frcmods:
         leap_content.append(f"loadAmberParams {(Path(fd)).resolve()}")
+    leap_content.append(f"source leaprc.protein.ff14SB")
+    leap_content.append(f"source leaprc.RNA.OL3")
+    leap_content.append(f"source leaprc.water.tip3p")
     residue_libs = list(LIB.glob("*.lib"))
     # internal libs
     for reslib in residue_libs:
