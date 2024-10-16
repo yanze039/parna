@@ -28,6 +28,7 @@ def rd_load_file(
     ):
     """Load a file into RDKit `Chem.mol` object.
     """
+    # from rdkit.Chem.rdchem import PDBResidueInfo
     infile = Path(Path(infile).resolve())
     if infile.suffix == ".pdb":
         mol = Chem.MolFromPDBFile(str(infile), removeHs=removeHs, sanitize=sanitize)
@@ -62,8 +63,13 @@ def rd_load_file(
 
 def atomName_to_index(mol):
     atomName_to_index = {}
+    # atom.HasProp('_TriposAtomName'):
     for i in range(mol.GetNumAtoms()):
-        atomName_to_index[mol.GetAtomWithIdx(i).GetPDBResidueInfo().GetName().strip()] = i
+        atom = mol.GetAtomWithIdx(i)
+        if atom.HasProp('_TriposAtomName'):
+            atomName_to_index[atom.GetProp('_TriposAtomName').strip()] = i
+        else:
+            atomName_to_index[atom.GetPDBResidueInfo().GetName().strip()] = i
     return atomName_to_index
 
 
