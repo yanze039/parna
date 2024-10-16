@@ -134,8 +134,12 @@ def build_backbone(
 
 
 def build_residue_pdb_block(
-        input_file, residue_name, template_residue, atomtype=None, 
-        residue_tail_idx=None, template_tail_idx=None, only_heavy_atoms=True, 
+        input_file, residue_name, template_residue, 
+        atomtype=Chem.rdFMCS.AtomCompare.CompareAnyHeavyAtom, 
+        bondCompare=Chem.rdFMCS.BondCompare.CompareOrder,
+        residue_tail_idx=None, template_tail_idx=None, 
+        residue_head_idx=None, template_head_idx=None,
+        only_heavy_atoms=True, 
         atomCompare=Chem.rdFMCS.AtomCompare.CompareAnyHeavyAtom
     ):
     logger.info(f"Building residue {residue_name} from {input_file} using template {template_residue}")
@@ -159,25 +163,43 @@ def build_residue_pdb_block(
     # sanitize the molecule to update the ring-info, otherwise the atom mapping will fail.
     # Not sanitize --> RuntimeError: Pre-condition Violation, RingInfo not initialized.
     Chem.SanitizeMol(rd_tmpl_block)
-    # atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, atomCompare=Chem.rdFMCS.AtomCompare.CompareAny)
-    atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, completeRingsOnly=True, atomCompare=atomCompare)
-    
+
+    editable_mol = Chem.EditableMol(rd_mol)
+    editable_tmpl_mol = Chem.EditableMol(rd_tmpl_block)
     if residue_tail_idx is not None and template_tail_idx is not None:
-        for i in range(len(atom_mapping)):
-            atom_pair = atom_mapping[i]
-            if atom_pair[0] == template_tail_idx:
-                template_tail_partner_id = atom_pair[1]
-            if atom_pair[1] == residue_tail_idx:
-                residue_tail_partner_id = atom_pair[0]
-        if template_tail_partner_id != residue_tail_idx:
-            for i in range(len(atom_mapping)):
-                atom_pair = atom_mapping[i]
-                if atom_pair[0] == template_tail_idx:
-                    atom_mapping[i] = (template_tail_idx, residue_tail_idx)
-                if atom_pair[1] == residue_tail_idx:
-                    atom_mapping[i] = (residue_tail_partner_id, template_tail_partner_id)
+        new_atom_tail_idx = editable_mol.AddAtom(Chem.Atom(57))
+        editable_mol.AddBond(residue_tail_idx, new_atom_tail_idx, Chem.BondType.DOUBLE)
+        new_atom_tail_tmpl_idx = editable_tmpl_mol.AddAtom(Chem.Atom(57))
+        editable_tmpl_mol.AddBond(template_tail_idx, new_atom_tail_tmpl_idx, Chem.BondType.DOUBLE)
     
+    if residue_head_idx is not None and template_head_idx is not None:
+        new_atom_head_idx = editable_mol.AddAtom(Chem.Atom(58))
+        editable_mol.AddBond(residue_head_idx, new_atom_head_idx, Chem.BondType.SINGLE)
+        new_atom_head_tmpl_idx = editable_tmpl_mol.AddAtom(Chem.Atom(58))
+        editable_tmpl_mol.AddBond(template_head_idx, new_atom_head_tmpl_idx, Chem.BondType.SINGLE)
+    
+    rd_tmpl_block = editable_tmpl_mol.GetMol() 
+    rd_mol = editable_mol.GetMol()
+    
+    atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, completeRingsOnly=True, 
+                             atomCompare=atomCompare, bondCompare=bondCompare)
     logger.info("Atom mapping:")
+    logger.info(atom_mapping)
+    logger.info(f"{template_head_idx} {residue_head_idx}, ")
+    logger.info(f"{template_tail_idx} {residue_tail_idx}, ")
+    
+    if residue_head_idx is not None and template_head_idx is not None:
+        editable_mol.RemoveAtom((new_atom_head_idx))
+        editable_tmpl_mol.RemoveAtom((new_atom_head_tmpl_idx))
+        atom_mapping = [(i, j) for i, j in atom_mapping if i != new_atom_head_tmpl_idx]
+    if residue_tail_idx is not None and template_tail_idx is not None:
+        editable_mol.RemoveAtom((new_atom_tail_idx))
+        editable_tmpl_mol.RemoveAtom((new_atom_tail_tmpl_idx))
+        atom_mapping = [(i, j) for i, j in atom_mapping if i != new_atom_tail_tmpl_idx]
+    
+    rd_tmpl_block = editable_tmpl_mol.GetMol() 
+    rd_mol = editable_mol.GetMol()
+
     logger.info(atom_mapping)
     
     inverse_atom_mapping = [(j, i) for i, j in atom_mapping]
@@ -412,15 +434,6 @@ def make_fragment(
                     terminal=terminal,
                     oxygen_type=oxygen_type
                 )
-    elif residue_type == "cap":
-        if terminal == "3'":
-            raise ValueError("Cap residue should be 5' terminal")
-        pmd_mol = build_residue_cap(
-                    input_file, 
-                    atom_name_mapping,
-                    residue_name,
-                    charge=charge
-                )
     else:
         raise ValueError("residue_type should be either 'without_phosphate', 'with_phosphate' or 'cap'")
     
@@ -428,6 +441,131 @@ def make_fragment(
     pmd_mol.save(str(output_dir/f"{residue_name}{suffix}.lib"), overwrite=True)
     pmd_mol.to_structure().write_pdb(str(output_dir/f"{residue_name}.pdb"), use_hetatoms=False)
 
+
+def make_cap(
+        input_file,
+        residue_name,
+        output_dir=".",
+        charge=+1,
+        suffix="",
+    ):
+    input_file = Path(input_file)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True)
+    
+    sugar_template_file = TEMPLATE/"sugar_template.pdb"
+    sugar_template = Chem.MolFromPDBFile(str(sugar_template_file), removeHs=False)
+    rd_mol = rd_load_file(input_file, removeHs=False)
+    atom_maps = map_atoms(sugar_template, rd_mol)
+    mapping_dict = {}
+    for atom in atom_maps:
+        mapping_dict[atom[0]] = atom[1]
+    name2idx = atomName_to_index(sugar_template)
+    atom_name_mapping = {}
+    for name, idx in name2idx.items():
+        if idx in mapping_dict:
+            atom_name_mapping[name] = mapping_dict[idx]
+     
+    antechamber(
+        input_file=input_file, 
+        input_type=input_file.suffix[1:], 
+        output=input_file.parent/f"{residue_name}._amber.mol2", 
+        atom_type="amber", 
+        residue_name=residue_name,
+        charge=charge
+    )
+    pmd_mol = pmd.load_file(str(input_file.parent/f"{residue_name}._amber.mol2"))
+    pmd_mol.fix_charges()
+    pmd_mol.atoms[atom_name_mapping["C5'"]].type = "CI"
+    pmd_mol.tail = pmd_mol.atoms[atom_name_mapping["C5'"]]
+    atom_delete = [
+        pmd_mol.atoms[atom_name_mapping["HO5'"]],
+        pmd_mol.atoms[atom_name_mapping["O5'"]]
+    ]
+    for atom in atom_delete:
+        pmd_mol.delete_atom(atom)
+    os.remove(input_file.parent/f"{residue_name}._amber.mol2")
+    pmd_mol.save(str(output_dir/f"{residue_name}{suffix}.mol2"), overwrite=True)
+    pmd_mol.save(str(output_dir/f"{residue_name}{suffix}.lib"), overwrite=True)
+    pmd_mol.to_structure().write_pdb(str(output_dir/f"{residue_name}.pdb"), use_hetatoms=False)
+    return pmd_mol
+
+def make_linker(
+        input_file,
+        residue_name,
+        output_dir=".",
+        charge=-3,
+        suffix="",
+        oxygen_type="dcase",
+        head=None,
+        tail=None
+    ):
+    input_file = Path(input_file)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True)
+    
+    rd_mol = rd_load_file(input_file, removeHs=False)
+    pattern_mol = Chem.MolFromSmarts("C[*]P[*]P[*]P[*]C")
+    pattern_atoms = rd_mol.GetSubstructMatches(pattern_mol)[0]
+    
+    P_atoms = [pattern_atoms[x] for x in [2, 4, 6]]
+    OR_atoms = []
+    for x in [1, 3, 5, 7]:
+        atom = pattern_atoms[x]
+        if rd_mol.GetAtomWithIdx(atom).GetAtomicNum() == 8:
+            OR_atoms.append(atom)
+    C_atoms = [pattern_atoms[0], pattern_atoms[-1]]
+    OP_atoms = []
+    for Pi in P_atoms:
+        Patom = rd_mol.GetAtomWithIdx(Pi)
+        neighbors = Patom.GetNeighbors()
+        for neighbor in neighbors:
+            if neighbor.GetAtomicNum() == 8 and neighbor.GetDegree() == 1:
+                OP_atoms.append(neighbor.GetIdx())
+
+    antechamber(
+        input_file=input_file, 
+        input_type=input_file.suffix[1:], 
+        output=input_file.parent/f"{residue_name}._amber.mol2", 
+        atom_type="amber", 
+        residue_name=residue_name,
+        charge=charge
+    )
+    
+    pmd_mol = pmd.load_file(str(input_file.parent/f"{residue_name}._amber.mol2"))
+    pmd_mol.fix_charges()
+    
+    if oxygen_type == "dcase":
+        for ai in OP_atoms:
+            pmd_mol.atoms[ai].type = "OP"
+        for ai in OR_atoms:
+            pmd_mol.atoms[ai].type = "OR"
+    else:
+        pass
+    
+    head = pattern_atoms[1] if head is None else head
+    tail = pattern_atoms[-2] if tail is None else tail
+    pmd_mol.tail = pmd_mol.atoms[tail]
+    pmd_mol.head = pmd_mol.atoms[head]
+    
+    atom_delete = []
+    for ci in C_atoms:
+        atom_delete.append(ci)
+        neighbors = rd_mol.GetAtomWithIdx(ci).GetNeighbors()
+        for neighbor in neighbors:
+            if neighbor.GetAtomicNum() == 1:
+                atom_delete.append(neighbor.GetIdx())
+        
+    atom_delete.sort(reverse=True)
+    atom_delete = [pmd_mol.atoms[ai] for ai in atom_delete]
+    for atom in atom_delete:
+        pmd_mol.delete_atom(atom)
+        
+    os.remove(input_file.parent/f"{residue_name}._amber.mol2")
+    pmd_mol.save(str(output_dir/f"{residue_name}{suffix}.mol2"), overwrite=True)
+    pmd_mol.save(str(output_dir/f"{residue_name}{suffix}.lib"), overwrite=True)
+    pmd_mol.to_structure().write_pdb(str(output_dir/f"{residue_name}.pdb"), use_hetatoms=False)
+    return pmd_mol
 
 def replace_residue(oligo_pdb, residue_pdb, residue_id, output_file):
     logger.info("Replacing residue %d in %s with %s", residue_id, oligo_pdb, residue_pdb)
@@ -471,6 +609,7 @@ def make_fragment_cap(
         output_dir,
         charge=-2
     ):
+    """This is an old version for m7Gppp"""
 
     input_file = Path(input_file)
     output_dir = Path(output_dir)
@@ -515,6 +654,68 @@ def make_fragment_cap(
     pmd_mol.tail = new_tail
     pmd_mol.save(str(output_dir/f"{residue_name}.mol2"), overwrite=True)
     pmd_mol.save(str(output_dir/f"{residue_name}.lib"), overwrite=True)
+    
+    
+def make_atom_name_mapping(
+        input_file, template_residue,
+        atomtype="amber", 
+        bondCompare=Chem.rdFMCS.BondCompare.CompareOrder,
+        residue_tail_idx=None, template_tail_idx=None, 
+        residue_head_idx=None, template_head_idx=None,
+        only_heavy_atoms=True, 
+        atomCompare=Chem.rdFMCS.AtomCompare.CompareAnyHeavyAtom
+    ):
+    logger.info(f"mapping {input_file} using template {template_residue}")
+    rd_mol = rd_load_file(str(input_file), removeHs=False, atomtype=atomtype)
+    
+    rd_tmpl_block = rd_load_file(str(template_residue), removeHs=only_heavy_atoms, 
+                                 atomtype=atomtype,
+                                 sanitize=False)
+    # sanitize the molecule to update the ring-info, otherwise the atom mapping will fail.
+    # Not sanitize --> RuntimeError: Pre-condition Violation, RingInfo not initialized.
+    Chem.SanitizeMol(rd_tmpl_block)
 
+    editable_mol = Chem.EditableMol(rd_mol)
+    editable_tmpl_mol = Chem.EditableMol(rd_tmpl_block)
+    if residue_tail_idx is not None and template_tail_idx is not None:
+        new_atom_tail_idx = editable_mol.AddAtom(Chem.Atom(57))
+        editable_mol.AddBond(residue_tail_idx, new_atom_tail_idx, Chem.BondType.DOUBLE)
+        new_atom_tail_tmpl_idx = editable_tmpl_mol.AddAtom(Chem.Atom(57))
+        editable_tmpl_mol.AddBond(template_tail_idx, new_atom_tail_tmpl_idx, Chem.BondType.DOUBLE)
+    
+    if residue_head_idx is not None and template_head_idx is not None:
+        new_atom_head_idx = editable_mol.AddAtom(Chem.Atom(58))
+        editable_mol.AddBond(residue_head_idx, new_atom_head_idx, Chem.BondType.SINGLE)
+        new_atom_head_tmpl_idx = editable_tmpl_mol.AddAtom(Chem.Atom(58))
+        editable_tmpl_mol.AddBond(template_head_idx, new_atom_head_tmpl_idx, Chem.BondType.SINGLE)
+    
+    rd_tmpl_block = editable_tmpl_mol.GetMol() 
+    rd_mol = editable_mol.GetMol()
+    
+    atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, completeRingsOnly=True, 
+                             atomCompare=atomCompare, bondCompare=bondCompare)
+    logger.info("Atom mapping:")
+    logger.info(atom_mapping)
+    logger.info(f"{template_head_idx} {residue_head_idx}, ")
+    logger.info(f"{template_tail_idx} {residue_tail_idx}, ")
+    
+    if residue_head_idx is not None and template_head_idx is not None:
+        editable_mol.RemoveAtom((new_atom_head_idx))
+        editable_tmpl_mol.RemoveAtom((new_atom_head_tmpl_idx))
+        atom_mapping = [(i, j) for i, j in atom_mapping if i != new_atom_head_tmpl_idx]
+    if residue_tail_idx is not None and template_tail_idx is not None:
+        editable_mol.RemoveAtom((new_atom_tail_idx))
+        editable_tmpl_mol.RemoveAtom((new_atom_tail_tmpl_idx))
+        atom_mapping = [(i, j) for i, j in atom_mapping if i != new_atom_tail_tmpl_idx]
 
-
+    logger.info(atom_mapping)
+    mol_name2idx = atomName_to_index(rd_mol)
+    mol_idx2name = {j:i for i, j in mol_name2idx.items()}
+    tmpl_name2idx = atomName_to_index(rd_tmpl_block)
+    tmpl_idx2name = {j:i for i, j in tmpl_name2idx.items()}
+    
+    atom_name_mapping = {}
+    for i, j in atom_mapping:
+        atom_name_mapping[tmpl_idx2name[i]] = mol_idx2name[j]
+    return atom_name_mapping
+    

@@ -59,9 +59,13 @@ DIHDEDRAL_CONSTRAINTS_PHOSPHATE = {
         "atoms": ["C3'", "C2'", "O2'", "HO2'"],
         "angle": 150.0
     },
+    # "alpha": {
+    #     "atoms": ["O3'", "P", "O52", "C01"],
+    #     "angle": -66.0
+    # },
     "alpha": {
         "atoms": ["O3'", "P", "O52", "C01"],
-        "angle": -66.0
+        "angle": 180.
     },
 }
 
@@ -73,7 +77,7 @@ PSEUDOROTATION = {
     },
     
     "C2'-endo": {
-        "phase": -16.67,
+        "phase": 162.65,
         "intensity": 0.6706
     },
 }

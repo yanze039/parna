@@ -3,7 +3,7 @@ from rdkit import Chem
 from rdkit.Chem import rdFMCS
 import parmed as pmd
 from pathlib import Path
-from parna.utils import read_yaml
+from parna.utils import read_yaml, rd_load_file
 from parna.molops import construct_local_frame
 import yaml
 import numpy as np
@@ -119,6 +119,10 @@ def extract_backbone(input_file, output_dir,
 
     if end < 0:
         end = (n_residues + end) % n_residues
+    
+    print(input_file)
+    rd_mol = rd_load_file(str(input_file), removeHs=True, sanitize=False)
+    
     for i in range(n_residues):
         if i < start:
             continue
@@ -128,8 +132,34 @@ def extract_backbone(input_file, output_dir,
         residue = pmd_mol.residues[i]
         _residue_template = pmd.modeller.residue.ResidueTemplate().from_residue(residue)
         residue_template = _residue_template.to_structure()
-        tail = pmd.modeller.residue.ResidueTemplate().from_residue(residue).tail
-        head = pmd.modeller.residue.ResidueTemplate().from_residue(residue).head
+        if not keep_hydrogen:
+            residue_template.strip("@H*")
+        tail = _residue_template.tail
+        head = _residue_template.head  
+           
+        # find the bond connecting i and i+1 residue
+        # tail = None
+        # head = None
+        # for bond in rd_mol.GetBonds():
+        #     atom1 = bond.GetBeginAtom()
+        #     atom2 = bond.GetEndAtom()
+        #     print(atom1.GetPDBResidueInfo().GetResidueNumber(), atom2.GetPDBResidueInfo().GetResidueNumber())
+        #     print(atom1.GetPDBResidueInfo().GetName(), atom2.GetPDBResidueInfo().GetName())
+        #     if atom1.GetPDBResidueInfo().GetResidueNumber() == i+1 and atom2.GetPDBResidueInfo().GetResidueNumber() == i:
+        #         tail = atom1
+        #     elif atom1.GetPDBResidueInfo().GetResidueNumber() == i and atom2.GetPDBResidueInfo().GetResidueNumber() == i+1:
+        #         tail = atom2
+        #     if atom1.GetPDBResidueInfo().GetResidueNumber() == i and atom2.GetPDBResidueInfo().GetResidueNumber() == i-1:
+        #         head = atom1
+        #     elif atom1.GetPDBResidueInfo().GetResidueNumber() == i-1 and atom2.GetPDBResidueInfo().GetResidueNumber() == i:
+        #         head = atom2
+        # if tail is not None:
+        #     tail_atom_name = tail.GetPDBResidueInfo().GetName().strip()
+        #     tail = residue_template.map[tail_atom_name]
+        # if head is not None:
+        #     head_atom_name = head.GetPDBResidueInfo().GetName().strip()
+        #     head = residue_template.map[head_atom_name]
+
         residue_name=residue.name+"_"+str(residue.number)
         canonical_residue=(residue.number not in noncanonical_residues)
         frame_info = extract_residue(residue_template, 
