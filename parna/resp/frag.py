@@ -5,7 +5,7 @@ from pathlib import Path
 import os
 import shutil
 from collections import OrderedDict
-from parna.utils import flatten_list, atomName_to_index, map_atoms
+from parna.utils import flatten_list, rd_load_file
 from parna.logger import getLogger
 
 logger = getLogger(__name__)
@@ -24,7 +24,7 @@ smartsStringPattern = {
 def read_chg(fchg):
     charge_info = OrderedDict()
     atom_index = 0
-    with open(fchg, "r") as fp:
+    with open(fchg, "r", encoding='utf-8', errors='ignore') as fp:
         for line in fp.readlines():
             info = line.strip().split()
             if len(info) == 5:
@@ -43,7 +43,7 @@ def read_chg(fchg):
 def read_log_chg(log_file):
     charge_info = OrderedDict()
     atom_index = 0
-    with open(log_file, "r") as fp:
+    with open(log_file, "r", encoding='utf-8', errors='ignore') as fp:
         content = list(fp.readlines())
     start_line = None
     end_line = None
@@ -159,7 +159,21 @@ def getEquivalenceConstraints(query):
         "Stage2": equal_H_CH2 + equal_H_CH3
     }
 
-def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name, tightness=0.1, wfn_file_type="molden"):
+def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name, 
+                     tightness=0.1, wfn_file_type="molden", 
+                     extra_charge_constraints={}, extra_equivalence_constraints=[]):
+    """
+    
+    Example:
+    
+    >>> extra_charge_constraints = {
+            "name1": {
+                "atom_idx": [0,1,2,3],
+                "value": 0.0
+            }
+        }
+    >>> extra_equivalence_constraints = [[1,2], [3,4]]
+    """
     logger.info("Reading input file...")
     input_file = Path(input_file)
     output_dir = Path(output_dir)
@@ -175,24 +189,41 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name, tightn
     fchk_file = fchk_files[0]
     if str(input_file).endswith(".pdb"):
         query = Chem.MolFromPDBFile(str(input_file), removeHs = False)
+        Chem.rdDetermineBonds.DetermineConnectivity(query)
     elif str(input_file).endswith(".xyz"):
         query = Chem.MolFromXYZFile(str(input_file))
+        Chem.rdDetermineBonds.DetermineConnectivity(query)
+    elif str(input_file).endswith(".sdf"):
+        query = rd_load_file(str(input_file), removeHs = False)
     else:
         raise ValueError("The input file is not supported")
     # get bond connection
     Chem.SanitizeMol(query)
-    Chem.rdDetermineBonds.DetermineConnectivity(query)
+
+    charge_constraints = []
+    for _, constraint in extra_charge_constraints.items():
+        charge_constraints.append([constraint["atom_idx"], constraint["value"]])
+    
     eq_constraints = getEquivalenceConstraints(query)
     equivalence_constraints_1_file = output_dir/f"{Path(input_file).stem}_equivalence_constraints_stage1.dat"
     with open(equivalence_constraints_1_file, "w") as fp:
         for atom_pair in eq_constraints["Stage1"]:
             atom_string = ",".join([str(x) for x in atom_pair])
             fp.write(f"{atom_string}\n")
+        for atom_pair in extra_equivalence_constraints:
+            atom_string = ",".join([str(x+1) for x in atom_pair])
+            fp.write(f"{atom_string}\n")
+
+    charge_constrains_file = output_dir/f"{Path(input_file).stem}_charge_constraints_stage1.dat"
+    with open(charge_constrains_file, "w") as fp:
+        for pair in charge_constraints:
+            atom_string = ",".join([str(x+1) for x in pair[0]])
+            fp.write(f"{atom_string} {pair[1]:.6f}\n")
     
     RESPStage1(
         fchk=fchk_file.resolve(),
         conf_list_file=conf_list_txt.resolve(),
-        chgConstraints=None,
+        chgConstraints=charge_constrains_file.resolve(),
         eqConstraints=equivalence_constraints_1_file.resolve(),
         a=0.0005,
         b=tightness,
@@ -221,7 +252,7 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name, tightn
     with open(charge_constrains_file_2, "w") as fp:
         for pair in charge_constraints_stage2:
             fp.write(f"{pair[0]:d} {pair[1]:.6f}\n")
-    
+        
     # CH2 and CH3
     equivalence_constraints_2_file = output_dir/f"{Path(input_file).stem}_equivalence_constraints_stage2.dat"
     with open(equivalence_constraints_2_file, "w") as fp:
@@ -252,6 +283,13 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name, tightn
     if not str(input_file).endswith(".pdb"):
         tmp_pdb = str(output_dir/(input_file.stem+".tmp.pdb"))
         Chem.MolToPDBFile(query, tmp_pdb, flavor=2)
+        # remove CONECT lines
+        with open(tmp_pdb, "r") as fp:
+            content = list(fp.readlines())
+        with open(tmp_pdb, "w") as fp:
+            for line in content:
+                if not line.startswith("CONECT"):
+                    fp.write(line)
     else:
         tmp_pdb = input_file
     
@@ -263,7 +301,7 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name, tightn
         str(residue_name),
         charge=int(total_charge_mol)
     )
-    os.remove(tmp_pdb)
+    
     mol2 = pmd.load_file(str(output_dir/f"{Path(input_file).stem}.tmp.mol2"))
     
     for idx, atom in enumerate(mol2.atoms):
@@ -275,6 +313,7 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name, tightn
     logger.info("File saved to: " + str(output_dir/f"{Path(input_file).stem}.resp.mol2"))
     logger.info(f"Charge fitting finished for {input_file}")
     os.remove(output_dir/f"{Path(input_file).stem}.tmp.mol2")
+    os.remove(tmp_pdb)
 
 
 

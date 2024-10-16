@@ -25,7 +25,8 @@ def RESP(
         n_threads=48, 
         method_basis="HF/6-31G*",
         aqueous=False,
-        engine="psi4"
+        engine="psi4",
+        charge_constrained_groups=["OH5", "OH3"]
     ):
     logger.info(f"Generating conformers for {input_file}...")
     gen_conformer(
@@ -39,6 +40,8 @@ def RESP(
     conformer_files = list(Path(output_dir).glob("resp_conformer_*.xyz"))
     for conformer_file in conformer_files:
         logger.info(f"Calculating energy for {conformer_file}")
+        if os.path.exists(f"{output_dir}/{(conformer_file).stem}.psi4.fchk"):
+            continue
         calculate_energy(
             conformer_file,
             output_dir, 
@@ -60,7 +63,8 @@ def RESP(
         output_dir=output_dir, 
         residue_name=residue_name, 
         tightness=0.1,
-        wfn_file_type=wfn_file_type
+        wfn_file_type=wfn_file_type,
+        charge_constrained_groups=charge_constrained_groups
     )
     logger.info("RESP calculation finished.")
     return None
@@ -127,6 +131,8 @@ def RESP_fragment(
         memory="160 GB", 
         n_threads=48, 
         method_basis="HF/6-31G*",
+        extra_charge_constraints={},
+        extra_equivalence_constraints=[]
     ):
     logger.info(f"RESP charging {input_files}...")
     output_dir = Path(output_dir)  
@@ -137,6 +143,8 @@ def RESP_fragment(
         conformers = input_files
     
     for conformer_file in conformers:
+        if os.path.exists(f"{output_dir}/{(Path(conformer_file)).stem}.psi4.fchk"):
+            continue
         calculate_energy(
             conformer_file,
             str(output_dir), 
@@ -152,7 +160,9 @@ def RESP_fragment(
         output_dir=str(output_dir), 
         residue_name=residue_name, 
         tightness=0.1,
-        wfn_file_type="fchk"
+        wfn_file_type="fchk",
+        extra_charge_constraints=extra_charge_constraints,
+        extra_equivalence_constraints=extra_equivalence_constraints
     )
 
 

@@ -156,12 +156,14 @@ def getEquivalenceConstraints(query):
         "Stage2": equal_H_CH2 + equal_H_CH3
     }
 
-def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0.1, wfn_file_type="molden", wfn_file_prefix="resp_conformer"):
+def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0.1, 
+                wfn_file_type="molden", wfn_file_prefix="resp_conformer",
+                charge_constrained_groups=["OH5", "OH3"]):
 
     constraint_types = {
         "OH5": {
             "atoms": ["O5'", "HO5'"],
-            "value": -0.622300 + 0.429500
+            "value": -0.622300 + 0.429500 # -0.1928
         },
         "OH3": {
             "atoms": ["O3'", "HO3'"],
@@ -186,6 +188,8 @@ def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0
         query = rd_load_file(str(input_file), removeHs = False, determine_bond_order=False)
     elif str(input_file).endswith(".xyz"):
         query = rd_load_file(str(input_file), determine_bond_order=False)
+    elif str(input_file).endswith(".sdf"):
+        query = rd_load_file(str(input_file), removeHs = False)
     else:
         raise ValueError("The input file is not supported")
     template = rd_load_file(str(sugar_template_file), removeHs = False)
@@ -198,7 +202,8 @@ def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0
         atom_mapping_dict[pair[0]] = pair[1]
     
     charge_constraints = []
-    for constraint_type, atom_names in constraint_types.items():
+    for constraint_type in charge_constrained_groups:
+        atom_names = constraint_types[constraint_type]
         idx_list = [template_name2idx_map[atom_name] for atom_name in atom_names["atoms"]]
         if all([x in atom_mapping_dict.keys() for x in idx_list]):
             atom_pair = [atom_mapping_dict[idx] for idx in idx_list]
@@ -281,6 +286,13 @@ def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0
     tmp_pdb = str(output_dir/(input_file.stem+".tmp.pdb"))
     if not str(input_file).endswith(".pdb"):
         Chem.MolToPDBFile(query, tmp_pdb, flavor=2)
+        # remove CONECT lines
+        with open(tmp_pdb, "r") as fp:
+            content = list(fp.readlines())
+        with open(tmp_pdb, "w") as fp:
+            for line in content:
+                if not line.startswith("CONECT"):
+                    fp.write(line)
     else:
         shutil.copy(input_file, tmp_pdb)
         
@@ -292,7 +304,6 @@ def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0
         str(residue_name),
         charge=int(total_charge_mol)
     )
-    os.remove(tmp_pdb)
     
     mol2 = pmd.load_file(str(output_dir/f"{Path(input_file).stem}.tmp.mol2"))
     
@@ -304,7 +315,9 @@ def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0
     mol2.save(str(output_dir/f"{Path(input_file).stem}.mol2"), overwrite=True)
     logger.info("File saved to: " + str(output_dir/f"{Path(input_file).stem}.mol2"))
     logger.info(f"Charge fitting finished for {input_file}")
+    os.remove(tmp_pdb)
     os.remove(output_dir/f"{Path(input_file).stem}.tmp.mol2")
+    
 
 
 
