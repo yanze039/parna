@@ -201,3 +201,211 @@ class DihedralScanner:
         """
         return self.engine.get_results()
         
+
+class ConformerOptimizer:
+    def __init__(
+                self, 
+                input_file: str, 
+                engine="xtb",
+                charge=0,
+                workdir="xtb",
+                conformer_prefix="conformer",
+                constraints=None,
+                force_constant=1.0,
+                warming_constraints=True
+        ):
+        self.input_file = Path(input_file)
+        self.engine = engine
+        self.charge = charge
+        self.workdir = Path(workdir)
+        if not os.path.exists(self.workdir):
+            os.makedirs(self.workdir)
+        if engine == "xtb":
+            if not shutil.which("xtb"):
+                raise FileNotFoundError("xtb is not found in the PATH. Please install xtb and add it to the PATH.")
+            self.engine = XTB(force_constant=force_constant)
+        else:
+            raise ValueError("Unsupported engine")
+        self.conformers = {}
+        self.conformer_prefix = conformer_prefix
+        self.constraints = constraints
+        self.warming_constraints = warming_constraints
+        self.force_constant = force_constant
+    
+    def add_constraint(self, dihedral: Tuple[int, int, int, int], angle: float, foece_constant=1.0):
+        """
+        Add a constraint to the dihedral angle.
+        Input:
+            dihedral: a tuple of four atom indices (0-indexed)
+            angle: the angle to constrain the dihedral angle to.
+        """
+        self.engine.add_constraint(
+            constraint_type="dihedral",
+            atoms = dihedral, 
+            at = angle,
+            force_constant=foece_constant
+        )
+    
+    def clear_constraints(self):
+        """
+        Clear all constraints.
+        """
+        self.engine.clear_constraints()
+    
+    def clear(self):
+        """
+        Clear all constraints.
+        """
+        self.engine.clear()
+        self.conformers = {}
+
+    def run(self):
+        """
+        Scan the dihedral angle on a grid.
+        concurrent_constraints: a list of constraints for each grid point.
+        """
+        self.clear_constraints()
+        if self.constraints is not None and len(self.constraints) > 0:
+            for c in self.constraints:
+                self.add_constraint(c[0], c[1], foece_constant=self.force_constant/20.)
+        self.engine.run(
+            coord=str(self.input_file),
+            charge=self.charge,
+            workdir=self.workdir,
+            inp_name="xtb_opt.inp"
+        )
+        self.clear_constraints()
+        if self.constraints is not None and len(self.constraints) > 0:
+            for c in self.constraints:
+                self.add_constraint(c[0], c[1], foece_constant=self.force_constant)
+        
+        shutil.copy(self.workdir/f"xtbopt{self.input_file.suffix}", self.workdir/f"xtbopt.tmp{self.input_file.suffix}")
+        self.engine.run(
+            coord=str(self.workdir/f"xtbopt.tmp{self.input_file.suffix}"),
+            charge=self.charge,
+            workdir=self.workdir,
+            inp_name="xtb_scan.inp"
+        )
+        if self.input_file.suffix == ".xyz":
+            os.rename(self.workdir/"xtbopt.xyz", self.workdir/f"{self.conformer_prefix}_opt.xyz")
+        elif self.input_file.suffix == ".pdb":
+            tmp_mol = Chem.MolFromPDBFile(str(self.workdir/"xtbopt.pdb"), removeHs=False)
+            Chem.MolToXYZFile(tmp_mol, str(self.workdir/f"{self.conformer_prefix}_opt.xyz"))
+            os.remove(self.workdir/f"xtbopt{self.input_file.suffix}")
+        os.remove(self.workdir/f"xtbopt.tmp{self.input_file.suffix}")
+    
+        
+
+class ConformerOptimizerCMAP:
+    def __init__(
+                self, 
+                input_file: str, 
+                engine="xtb",
+                charge=0,
+                workdir="xtb",
+                conformer_prefix="conformer",
+                constraints=None,
+                force_constant=1.0,
+                warming_constraints=True
+        ):
+        self.input_file = Path(input_file)
+        self.engine = engine
+        self.charge = charge
+        self.workdir = Path(workdir)
+        if not os.path.exists(self.workdir):
+            os.makedirs(self.workdir)
+        if engine == "xtb":
+            if not shutil.which("xtb"):
+                raise FileNotFoundError("xtb is not found in the PATH. Please install xtb and add it to the PATH.")
+            self.engine = XTB(force_constant=force_constant)
+        else:
+            raise ValueError("Unsupported engine")
+        self.conformers = {}
+        self.conformer_prefix = conformer_prefix
+        self.constraints = constraints
+        self.warming_constraints = warming_constraints
+        self.force_constant = force_constant
+    
+    def add_constraint(self, dihedral: Tuple[int, int, int, int], angle: float, foece_constant=1.0):
+        """
+        Add a constraint to the dihedral angle.
+        Input:
+            dihedral: a tuple of four atom indices (0-indexed)
+            angle: the angle to constrain the dihedral angle to.
+        """
+        self.engine.add_constraint(
+            constraint_type="dihedral",
+            atoms = dihedral, 
+            at = angle,
+            force_constant=foece_constant
+        )
+    
+    def clear_constraints(self):
+        """
+        Clear all constraints.
+        """
+        self.engine.clear_constraints()
+    
+    def clear(self):
+        """
+        Clear all constraints.
+        """
+        self.engine.clear()
+        self.conformers = {}
+
+    def run(self, relaxing_dihedrals: List[Tuple[int, int, int, int]]):
+        """
+        Scan the dihedral angle on a grid.
+        concurrent_constraints: a list of constraints for each grid point.
+        """
+        self.clear_constraints()
+        if self.constraints is not None and len(self.constraints) > 0:
+            for c in self.constraints:
+                self.add_constraint(c[0], c[1], foece_constant=self.force_constant/20.)
+        self.engine.run(
+            coord=self.input_file,
+            charge=self.charge,
+            workdir=self.workdir,
+            inp_name="xtb_opt.inp"
+        )
+        shutil.copy(self.workdir/f"xtbopt{self.input_file.suffix}", self.workdir/f"xtbopt.tmp{self.input_file.suffix}")
+        self.clear_constraints()
+        if self.input_file.suffix == ".xyz":
+            mol = Chem.MolFromXYZFile(str(self.workdir/f"xtbopt.tmp{self.input_file.suffix}"))
+        elif self.input_file.suffix == ".pdb":
+            mol = Chem.MolFromPDBFile(str(self.workdir/"xtbopt.tmp.pdb"), removeHs=False)
+        else:
+            raise ValueError("Unsupported file format")
+        new_constraints = []
+        for dihedral in relaxing_dihedrals:
+            at = Chem.rdMolTransforms.GetDihedralDeg(mol.GetConformer(), *dihedral)
+            # get the nearest degree on the grids, resolution=360/24
+            at = round(at/15)*15
+            new_constraints.append([dihedral, at])
+        for nc in new_constraints:
+            self.add_constraint(nc[0], nc[1], foece_constant=self.force_constant)
+        if self.constraints is not None and len(self.constraints) > 0:
+            for c in self.constraints:
+                self.add_constraint(c[0], c[1], foece_constant=self.force_constant)
+        
+        
+        self.engine.run(
+            coord=str(self.workdir/f"xtbopt.tmp{self.input_file.suffix}"),
+            charge=self.charge,
+            workdir=self.workdir,
+            inp_name="xtb_scan.inp"
+        )
+        if self.input_file.suffix == ".xyz":
+            os.rename(self.workdir/"xtbopt.xyz", self.workdir/f"{self.conformer_prefix}_opt.xyz")
+        elif self.input_file.suffix == ".pdb":
+            tmp_mol = Chem.MolFromPDBFile(str(self.workdir/"xtbopt.pdb"), removeHs=False)
+            Chem.MolToXYZFile(tmp_mol, str(self.workdir/f"{self.conformer_prefix}_opt.xyz"))
+            os.remove(self.workdir/f"xtbopt{self.input_file.suffix}")
+        else:
+            raise ValueError("Unsupported file format")
+        os.remove(self.workdir/f"xtbopt.tmp{self.input_file.suffix}")
+        return self.constraints + new_constraints
+    
+        
+    
+ 

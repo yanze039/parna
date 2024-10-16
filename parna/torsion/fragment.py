@@ -459,7 +459,7 @@ class TorsionFragmentizer:
         logger.info(f"Fragment owns charge: {Chem.GetFormalCharge(fragment)}")
         if self.determine_bond_orders:
             Chem.rdDetermineBonds.DetermineBonds(fragment, charge=Chem.GetFormalCharge(fragment))
-        AllChem.EmbedMolecule(fragment, randomSeed=20240519)
+        AllChem.EmbedMolecule(fragment, randomSeed=1106)
         AllChem.MMFFOptimizeMolecule(fragment)
         
         return fragment
@@ -652,7 +652,7 @@ class C5Fragmentizer:
                     atom.SetIsAromatic(False)
         fragment = Chem.AddHs(fragment)
         Chem.SanitizeMol(fragment)
-        AllChem.EmbedMolecule(fragment, randomSeed=20240519)
+        AllChem.EmbedMolecule(fragment, randomSeed=1106)
         return fragment
     
     def fragmentize(self):
