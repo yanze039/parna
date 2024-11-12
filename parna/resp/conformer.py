@@ -3,7 +3,7 @@ from pathlib import Path
 from rdkit.Chem import rdMolTransforms
 import os
 from parna.utils import rd_load_file, atomName_to_index, map_atoms
-from parna.qm.xtb import write_xtb_input, xtb
+from parna.qm.xtb_utils import write_xtb_input, xtb
 from parna.logger import getLogger
 from parna.constant import dihedral_constraint_templates
 

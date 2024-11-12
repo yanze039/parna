@@ -5,7 +5,7 @@ from parna.resp.cap import fit_charges_cap
 from parna.resp.frag import fit_charges_frag
 from pathlib import Path
 from parna.logger import getLogger
-from parna.qm.xtb import structure_optimization, gen_multi_conformations
+from parna.qm.xtb_utils import structure_optimization, gen_multi_conformations
 from parna.utils import map_atoms, rd_load_file, split_xyz_file
 import os
 import numpy as np

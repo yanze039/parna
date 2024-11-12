@@ -120,9 +120,6 @@ def extract_backbone(input_file, output_dir,
     if end < 0:
         end = (n_residues + end) % n_residues
     
-    print(input_file)
-    rd_mol = rd_load_file(str(input_file), removeHs=True, sanitize=False)
-    
     for i in range(n_residues):
         if i < start:
             continue
@@ -195,7 +192,8 @@ def extract_backbone(input_file, output_dir,
         local_frame_backbone[residue_name]["ringatom2"] = {"index": frame_info["ringatom2"]}
         
         # get backbone local frame
-        bb_frame = Chem.MolFromPDBFile(str(output_dir/f"{residue_name}.pdb"))
+        print(str(output_dir/f"{residue_name}.pdb"))
+        bb_frame = Chem.MolFromPDBFile(str(output_dir/f"{residue_name}.pdb"), removeHs=(not keep_hydrogen), sanitize=False)
         vector1, norm_vec = construct_local_frame(
             bb_frame, frame_info["center"], frame_info["ringatom1"], 
             frame_info["ringatom2"], frame_info["sugaratom"]

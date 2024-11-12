@@ -1,15 +1,21 @@
-from .optim import TorsionOptimizer
-from .fragment import TorsionFragmentizer, C5Fragmentizer
-from .conf import DihedralScanner
+from xtb.ase.calculator import XTB as XTB_calculator
+import copy
+import h5py
+import json
+from parna.torsion.optim import TorsionOptimizer
+from parna.torsion.fragment import TorsionFragmentizer, C5Fragmentizer
+from parna.torsion.conf import DihedralScanner, ConformerOptimizer, OpenMMCalculator, calculate_relaxed_energy
 from parna.utils import (rd_load_file, map_atoms, SLURM_HEADER_CPU, 
                          atomName_to_index, inverse_mapping, select_from_list, 
                          get_suger_picker_angles_from_pseudorotation,
-                         save_to_yaml)
+                         save_to_yaml, parse_xyz_file)
 from parna.constant import Hatree2kCalPerMol, PSEUDOROTATION
 from parna.qm.psi4_utils import read_energy_from_log
 from parna.qm.orca_utils import read_energy_from_txt
+from parna.qm.multiwfn_utils import read_charges, GetCharges
 from parna.resp import RESP
-from parna.molops import MoleculeFactory, SugarPatcher, modify_torsion_parameters
+from parna.molops import (MoleculeFactory, SugarPatcher, 
+                          modify_torsion_parameters, find_all_paths_between_two_atoms)
 from parna.constant import DIHDEDRAL_CONSTRAINTS, DIHDEDRAL_CONSTRAINTS_PHOSPHATE
 import parmed as pmd
 from parna.logger import getLogger
@@ -19,8 +25,29 @@ import rdkit.Chem as Chem
 from parna.resp import RESP_fragment
 import os
 import yaml
-import copy
+from ase.io.orca import read_orca_engrad
+from ase.io import read, write
 
+import torch
+# Define custom constructor for tuples
+def tuple_constructor(loader, node):
+    return tuple(loader.construct_sequence(node))
+
+# Define custom representer for tuples
+def tuple_representer(dumper, data):
+    return dumper.represent_sequence('tag:yaml.org,2002:python/tuple', data)
+
+def numpy_scalar_constructor(loader, node):
+    # Extract the value and convert it to a float or int as needed
+    value = loader.construct_scalar(node)
+    return float(value)  # or int(value) if the expected type is integer
+
+# Register the constructor for the specific tag
+yaml.add_constructor('tag:yaml.org,2002:python/object/apply:numpy.core.multiarray.scalar', numpy_scalar_constructor)
+
+# Add the constructors to PyYAML
+yaml.add_constructor('tag:yaml.org,2002:python/tuple', tuple_constructor)
+yaml.add_representer(tuple, tuple_representer)
 
 
 logger = getLogger(__name__)
@@ -271,7 +298,7 @@ class TorsionFactory(MoleculeFactory):
                 mm_energy = self.calculate_mm_energy(parm_mol, positions, implicit_solvent=self.aqueous)
                 parm_mol.positions = positions
                 if self.aqueous:
-                    log_file = conf.parent/f"{conf.stem}_property.txt"
+                    log_file = conf.parent/f"{conf.stem}.property.txt"
                     qm_energy = read_energy_from_txt(log_file)
                 else:
                     log_file = conf.with_suffix(".psi4.log")
@@ -477,8 +504,8 @@ class AmberTorsionFactory(MoleculeFactory):
                 local=local
             )
             self.slurm_files.append(slurm_file)
-            if not overwrite and os.path.exists(output_dir/f"{conf.stem}_property.txt"):
-                logger.info(f"File {conf.stem}_property.txt exists. Skipping the calculation.")
+            if not overwrite and os.path.exists(output_dir/f"{conf.stem}.property.txt"):
+                logger.info(f"File {conf.stem}.property.txt exists. Skipping the calculation.")
                 continue
                 
             if local:
@@ -554,7 +581,7 @@ class AmberTorsionFactory(MoleculeFactory):
             positions = np.array(conf_mol.GetConformer().GetPositions()) / 10.
             mm_energy = self.calculate_mm_energy(parm_mol, positions, implicit_solvent=True)
             parm_mol.positions = positions
-            log_file = conf.parent/f"{conf.stem}_property.txt"
+            log_file = conf.parent/f"{conf.stem}.property.txt"
             qm_energy = read_energy_from_txt(log_file)
             dihedrals.append(float(parm_mol.dihedrals[dih_idx].measure() / 180.0 * np.pi))
             mm_energies.append(mm_energy)
@@ -882,7 +909,7 @@ class NonCanonicalTorsionFactory(MoleculeFactory):
             for conf in self.all_conformer_files[vi]:
                 # >> read QM energy
                 if self.aqueous:
-                    log_file = conf.parent/f"{conf.stem}_property.txt"
+                    log_file = conf.parent/f"{conf.stem}.property.txt"
                     qm_energy = read_energy_from_txt(log_file)
                 else:
                     log_file = conf.with_suffix(".psi4.log")
@@ -1177,7 +1204,6 @@ class EpsilonZetaTorsionFactory(MoleculeFactory):
                     os.remove(conf.with_suffix(suffix))
             os.chdir(cwd)
             
-            
     def optimize(self, overwrite=False, suffix=""):
         output_dir = Path(self.output_dir)
         logger.info(f"Optimizing fragment Epsilon / Zeta")
@@ -1238,7 +1264,7 @@ class EpsilonZetaTorsionFactory(MoleculeFactory):
         for conf in self.all_conformer_files:
             # >> read QM energy
             if self.aqueous:
-                log_file = conf.parent/f"{conf.stem}_property.txt"
+                log_file = conf.parent/f"{conf.stem}.property.txt"
                 qm_energy = read_energy_from_txt(log_file)
             else:
                 log_file = conf.with_suffix(".psi4.log")
@@ -1372,7 +1398,7 @@ class EpsilonZetaTorsionFactory(MoleculeFactory):
         for conf in self.all_conformer_files:
             # >> read QM energy
             if self.aqueous:
-                log_file = conf.parent/f"{conf.stem}_property.txt"
+                log_file = conf.parent/f"{conf.stem}.property.txt"
                 qm_energy = read_energy_from_txt(log_file)
             else:
                 log_file = conf.with_suffix(".psi4.log")
@@ -1665,7 +1691,7 @@ class SugarPuckerTorsionFactory(MoleculeFactory):
         for conf in self.all_conformer_files:
             # >> read QM energy
             if self.aqueous:
-                log_file = conf.parent/f"{conf.stem}_property.txt"
+                log_file = conf.parent/f"{conf.stem}.property.txt"
                 qm_energy = read_energy_from_txt(log_file)
             else:
                 log_file = conf.with_suffix(".psi4.log")
@@ -1975,8 +2001,8 @@ class ChiTorsionFactory(MoleculeFactory):
         for conf in self.all_conformer_files:
             # >> read QM energy
             if self.aqueous:
-                log_file = conf.parent/f"{conf.stem}_property.txt"
-                qm_energy = read_energy_from_txt(log_file)
+                log_file = conf.parent/f"{conf.stem}.property.json"
+                qm_energy = read_energy_from_txt(log_file, source="orca", fmt="json")
             else:
                 log_file = conf.with_suffix(".psi4.log")
                 qm_energy = read_energy_from_log(log_file)
@@ -2063,10 +2089,13 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
                 determine_bond_orders: bool = False,
                 pairwise: bool = False,
                 constrain_sugar_pucker: bool = True,
-                epsilon_grids = [0, 35, 80, 125] + list(range(170, 290, 15)) + [290, 335],  # 14
-                zeta_grids = [0, 40, 85, 130, 175] + list(range(220, 340, 15)) + [340],  # 14
+                epsilon_grids = np.linspace(-180, 180, 25)[:-1],  # 14
+                zeta_grids = np.linspace(-180, 180, 25)[:-1],  # 14
+                sugar_grids = np.array([-60.,  -45.,  -30.,  -15.,    0.,   15.,   30.,   45.,  60.]),
                 phosphate_style: str = "amber",
-                alpha_gamma_style: str = "bsc0"
+                alpha_gamma_style: str = "bsc0",
+                train_epochs: int = 200,
+                pretrained_model_path: str = None
         ):
        
         self.basis = basis
@@ -2090,8 +2119,12 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
         self.constrain_sugar_pucker = constrain_sugar_pucker
         self.epsilon_grids = epsilon_grids
         self.zeta_grids = zeta_grids
+        self.sugar_grids = sugar_grids
         self.phosphate_style = phosphate_style
         self.alpha_gamma_style = alpha_gamma_style
+        self.train_epochs = train_epochs
+        self.pretrained_model_path = pretrained_model_path
+        # self.match_template()
         
     
     def match_template(self):
@@ -2136,31 +2169,63 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
             if atom.GetProp("_PatchAtom") == "1":
                 tagged_atoms.append(atom.GetIdx())
         
-        if "O2'" in self.mol_suger_symbol_index:
-            tagged_atoms.append(self.mol_suger_symbol_index["O2'"])
-            for neighbor in self.patched_mol.GetAtomWithIdx(self.mol_suger_symbol_index["O2'"]).GetNeighbors():
-                tagged_atoms.append(neighbor.GetIdx())
-        else:
-            aggressive_mapping = map_atoms(
-                self.sugar_template_with_PO3_mol, 
-                self.patched_mol, 
-                ringMatchesRingOnly=False, 
-                completeRingsOnly=False,
-                atomCompare=Chem.rdFMCS.AtomCompare.CompareAny
-            )
-            if sugar_tmpl_name_to_index[atom_name] in aggressive_mapping:
-                tagged_atoms.append(aggressive_mapping[sugar_tmpl_name_to_index[atom_name]])
-                for neighbor in self.patched_mol.GetAtomWithIdx(aggressive_mapping[sugar_tmpl_name_to_index[atom_name]]).GetNeighbors():
-                    tagged_atoms.append(neighbor.GetIdx())
-            else:
-                raise RuntimeError("O2' atom not found.")
+        # if "O2'" in self.mol_suger_symbol_index:
+        #     tagged_atoms.append(self.mol_suger_symbol_index["O2'"])
+        #     for neighbor in self.patched_mol.GetAtomWithIdx(self.mol_suger_symbol_index["O2'"]).GetNeighbors():
+        #         tagged_atoms.append(neighbor.GetIdx())
+        # else:
+        #     aggressive_mapping = map_atoms(
+        #         self.sugar_template_with_PO3_mol, 
+        #         self.patched_mol, 
+        #         ringMatchesRingOnly=False, 
+        #         completeRingsOnly=False,
+        #         atomCompare=Chem.rdFMCS.AtomCompare.CompareAny
+        #     )
+        #     if sugar_tmpl_name_to_index[atom_name] in aggressive_mapping:
+        #         tagged_atoms.append(aggressive_mapping[sugar_tmpl_name_to_index[atom_name]])
+        #         for neighbor in self.patched_mol.GetAtomWithIdx(aggressive_mapping[sugar_tmpl_name_to_index[atom_name]]).GetNeighbors():
+        #             tagged_atoms.append(neighbor.GetIdx())
+        #     else:
+        #         raise RuntimeError("O2' atom not found.")
         
         for ta in tagged_atoms:
             self.patched_mol.GetAtomWithIdx(ta).SetProp("_keep_at_fragment", "1")
-            
+    
+    
+    def is_sugar_locked(self):
+        """Check if the sugar is locked.
+        """
+        self.sugar_template_file = str(TEMPLATE_DIR/"sugar_template.pdb")
+        self.sugar_template_mol = Chem.MolFromPDBFile(str(self.sugar_template_file), removeHs=False)
+    
+        sugar_fragment_mapping = map_atoms(
+            self.sugar_template_mol,
+            self.mol, 
+            ringMatchesRingOnly=False, 
+            completeRingsOnly=False,
+        )
+        
+        mapping_dict = {}
+        for atom in sugar_fragment_mapping:
+            mapping_dict[atom[0]] = atom[1]
+        sugar_fragment_mapping = mapping_dict
+        _atom_names = ["C1'", "C2'", "C3'", "C4'", "C5'", "O2'", "O3'","O4'", "O5'",]
+        mol_suger_symbol_index = {}
+        sugar_tmpl_name_to_index = atomName_to_index(self.sugar_template_mol)
+        for atom_name in _atom_names:
+            if sugar_tmpl_name_to_index[atom_name] in sugar_fragment_mapping:
+                mol_suger_symbol_index[atom_name] = sugar_fragment_mapping[sugar_tmpl_name_to_index[atom_name]]
+        all_paths = find_all_paths_between_two_atoms(self.mol, mol_suger_symbol_index["C2'"], mol_suger_symbol_index["C4'"])
+        logger.info(f"Found {len(all_paths)} paths between C2' and C4'")
+        if len(all_paths) > 2:
+            return True
+        else:
+            return False
+    
     def fragmentize(self, output_dir):
         """Fragmentize the molecule by O3'-P bond.
         """
+        output_dir = Path(output_dir).resolve()
         self.match_template()
         EZTF = TorsionFragmentizer(
                 self.patched_mol, 
@@ -2175,227 +2240,604 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
         )
         if frag is None:
             logger.error(f"Fragmentization failed for molecule {self.mol_name}")
-        frag.save(str(output_dir/f"fragment_epsilon_zeta"), format="pdb")
+        frag.save(str(output_dir/f"fragment_sugar_epsilon_zeta"), format="pdb")
         logger.info(f"Rotatable bond: Epsilon/Zeta is valid for fragment ")
-        logger.info(f"Fragment is saved to {str(output_dir/f'fragment_epsilon_zeta')}")
+        logger.info(f"Fragment is saved to {str(output_dir/f'fragment_sugar_epsilon_zeta')}")
+        
+        # self.sugar_template_with_PO3_file = str(TEMPLATE_DIR/"sugar_template_with_3p_PO3.pdb")
+        # self.sugar_template_with_PO3_mol = Chem.MolFromPDBFile(str(self.sugar_template_with_PO3_file), removeHs=False)
+        # self.mpatcher = SugarPatcher(self.mol)
+        # self.patched_mol = self.mpatcher.patch_three_prime_end()
+        
+        sugar_fragment_mapping = map_atoms(
+            self.sugar_template_with_PO3_mol, 
+            frag.mol, 
+            ringMatchesRingOnly=False, 
+            completeRingsOnly=False,
+        )
+        
+        sugar_tmpl_name_to_index = atomName_to_index(self.sugar_template_with_PO3_mol)
+        mapping_dict = {}
+        for atom in sugar_fragment_mapping:
+            mapping_dict[atom[0]] = atom[1]
+        sugar_fragment_mapping = mapping_dict
+        _atom_names = ["C1'", "C2'", "C3'", "C4'", "C5'", "O2'", "O3'","O4'", "O5'", "HO2'", "HO5'", "P", "OP1", "OP2", "O52", "C01"]
+        mol_suger_symbol_index = {}
+        for atom_name in _atom_names:
+            if sugar_tmpl_name_to_index[atom_name] in sugar_fragment_mapping:
+                mol_suger_symbol_index[atom_name] = sugar_fragment_mapping[sugar_tmpl_name_to_index[atom_name]]
+   
         self.valid_fragment = {
             "fragment": frag,
-            "epsilon": tuple(frag.parent_fragment_mapping[self.mol_suger_symbol_index[x]] for x in ["C4'", "C3'", "O3'", "P"]),
-            "zeta": tuple(frag.parent_fragment_mapping[self.mol_suger_symbol_index[x]] for x in ["C3'", "O3'", "P", "O52"]),
+            "epsilon": tuple(mol_suger_symbol_index[x] for x in ["C2'", "C3'", "O3'", "P"]),
+            "zeta": tuple(mol_suger_symbol_index[x] for x in ["C3'", "O3'", "P", "O52"]),
+            "sugar-occo": tuple(mol_suger_symbol_index[x] for x in ["O2'", "C2'", "C3'", "O3'"]),
             "fragment_constraints": {}
         }
         # DIHDEDRAL_CONSTRAINTS
         if self.constrain_sugar_pucker:
-            for ctype in ["C3'-endo-constraint-v1", "C3'-endo-constraint-v3"]:
-                constraints = DIHDEDRAL_CONSTRAINTS[ctype]
-                atom_symbols = constraints["atoms"]
-                self.valid_fragment["fragment_constraints"][ctype] = {
-                    "type": "dihedral",
-                    "atom_index": [frag.parent_fragment_mapping[self.mol_suger_symbol_index[a]] for a in atom_symbols],
-                    "value": constraints["angle"],
-                }
             for ctype in ["O2'-constraint", "alpha"]:
                 constraints = DIHDEDRAL_CONSTRAINTS_PHOSPHATE[ctype]
                 atom_symbols = constraints["atoms"]
-                self.valid_fragment["fragment_constraints"][ctype] = {
-                    "type": "dihedral",
-                    "atom_index": [frag.parent_fragment_mapping[self.mol_suger_symbol_index[a]] for a in atom_symbols],
-                    "value": constraints["angle"],
-                }
+                try:
+                    self.valid_fragment["fragment_constraints"][ctype] = {
+                        "type": "dihedral",
+                        "atom_index": [mol_suger_symbol_index[a] for a in atom_symbols],
+                        "value": constraints["angle"],
+                    }
+                    logger.info(f"Added constraint {ctype} for fragment.")
+                    logger.info(f"Atoms: {atom_symbols} -> {self.valid_fragment['fragment_constraints'][ctype]['atom_index']}")
+                except Exception as e:
+                    logger.error(f"Error: {e}")
+                    logger.error(f"Could not find atom {atom_symbols} in fragment.")
+                    continue
     
-    def gen(self, submit=False, local=False, overwrite=False):
-        output_dir = Path(self.output_dir)
+    
+    def gen_qm_geometry(self, submit=False, overwrite=False):
+        import pickle
+        from parna.utils import dispatch_commands_to_jobs
+        output_dir = Path(self.output_dir).resolve()
+        logger.info(f" >>> Output directory: {output_dir} <<<")
+        self.fragmentize(output_dir)
+        self.all_conformer_files = []
+        self.slurm_files = []
+        logger.info(f"Scanning dihedral Sugar / Epsilon / Zeta")
+        
+        commands = []
+        
+        logger.info(f"Generating data for sugar, epsilon, zeta")
+        if not self.is_sugar_locked():
+            for si, sangle in enumerate(self.sugar_grids):
+                for ei, ep in enumerate(self.epsilon_grids):
+                    for zi, zeta in enumerate(self.zeta_grids):
+                        self.all_conformer_files.append(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.xyz")
+                        if (not overwrite) and os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.xyz"):
+                            # logger.info(f"File exists, skipping {output_dir/f'frag_s{si}_e{ei}_z{zi}_opt.xyz'}")
+                            continue
+                        # logger.info(f"Generating data for sugar {sangle}, epsilon {ep}, zeta {zeta}, frag_s{si}_e{ei}_z{zi}")
+                        constraints = [
+                            [self.valid_fragment["epsilon"], ep],
+                            [self.valid_fragment["zeta"], zeta],
+                            [self.valid_fragment["sugar-occo"], sangle],
+                        ] + [[x["atom_index"], x["value"]] for x in self.valid_fragment["fragment_constraints"].values()]
+                        
+                        if not os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.constraint.pkl"):
+                            with open(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.constraint.pkl", "wb") as f:
+                                pickle.dump(constraints, f)
+                        
+                        # slurm_content = SLURM_HEADER_CPU 
+                        orca_python_exec = Path(__file__).parent.parent / "qm" / "orca_optimize_geometry.py"
+                        frag_command = f"python" \
+                                        f" {str(orca_python_exec.resolve())}" \
+                                        f" {str(output_dir/'fragment_sugar_epsilon_zeta/fragment.pdb')}" \
+                                        f" {str(output_dir/'fragment_sugar_epsilon_zeta')}" \
+                                        f" --charge {self.valid_fragment['fragment'].charge}" \
+                                        f" --n_threads {self.threads}" \
+                                        f" --constraint-file {str(output_dir/f'fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.constraint.pkl')}" \
+                                        f" --prefix frag_s{si}_e{ei}_z{zi}" \
+                                        f"\n"
+                        commands.append(frag_command)
+                        
+        # dispatch jobs
+        dispatch_commands_to_jobs(
+            commands, n_jobs=8, job_prefix="frag_opt", work_dir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+            output_dir=str(output_dir/f"fragment_sugar_epsilon_zeta"), submit=submit, submit_options=f"-s {self.threads}"
+            
+        )    
+                        
+                        # if si + ei + zi == 0:
+                        #     last_file = str(output_dir/f"fragment_sugar_epsilon_zeta/fragment.pdb")
+                        #     pre_optimizer = ConformerOptimizer(
+                        #             input_file=str(last_file), 
+                        #             engine="xtb",
+                        #             charge=self.valid_fragment["fragment"].charge,
+                        #             workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+                        #             conformer_prefix=f"frag_s{si}_e{ei}_z{zi}_pre",
+                        #             constraints=constraints,
+                        #             force_constant=0.5,
+                        #             warming_constraints=True
+                        #     )
+                        #     pre_optimizer.run(basis="", method="XTB2", solvent="water", n_proc=self.threads, overwrite=False)
+                        
+                        # if si + ei + zi == 0:
+                        #     last_file = str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_pre_opt.xyz")
+                        # elif ei + zi == 0:
+                        #     last_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si-1}_e{ei}_z{zi}_opt.xyz"
+                        # elif zi == 0:
+                        #     last_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei-1}_z{zi}_opt.xyz"
+                        # else:
+                        #     last_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi-1}_opt.xyz"
+                        
+            #             copt = ConformerOptimizer(
+            #                         input_file=str(last_file), 
+            #                         engine="xtb",
+            #                         charge=self.valid_fragment["fragment"].charge,
+            #                         workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+            #                         conformer_prefix=f"frag_s{si}_e{ei}_z{zi}_tmp",
+            #                         constraints=constraints,
+            #                         force_constant=0.5,
+            #                         warming_constraints=True
+            #                 )
+            #             copt.run(solvent="water", n_proc=self.threads, overwrite=overwrite)
+                        
+            #             copt = ConformerOptimizer(
+            #                         input_file=str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_tmp_opt.xyz"), 
+            #                         engine="orca",
+            #                         charge=self.valid_fragment["fragment"].charge,
+            #                         workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+            #                         conformer_prefix=f"frag_s{si}_e{ei}_z{zi}",
+            #                         constraints=constraints,
+            #                         # force_constant=0.5,
+            #                         warming_constraints=True
+            #                 )
+            #             copt.run(basis="", method="XTB2", solvent="water", n_proc=self.threads, overwrite=overwrite)
+            #             if os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_tmp_opt.xyz"):
+            #                 os.remove(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_tmp_opt.xyz")    
+                        
+            # logger.warning("Sugar is locked, only scan epsilon zeta.")
+            # for ei, ep in enumerate(self.epsilon_grids):
+            #     for zi, zeta in enumerate(self.zeta_grids):
+            #         print(f"Generating data for, epsilon {ep}, zeta {zeta}. [locked sugar]")
+            #         constraints = [
+            #             [self.valid_fragment["epsilon"], ep],
+            #             [self.valid_fragment["zeta"], zeta],
+            #         ] + [[x["atom_index"], x["value"]] for x in self.valid_fragment["fragment_constraints"].values()]
+            #         self.all_conformer_files.append(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.xyz")
+            #         if os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.xyz"):
+            #             continue
+                    
+            #         if ei + zi == 0:
+            #             last_file = str(output_dir/f"fragment_sugar_epsilon_zeta/fragment.pdb")
+            #             pre_optimizer = ConformerOptimizer(
+            #                     input_file=str(last_file), 
+            #                     engine="xtb",
+            #                     charge=self.valid_fragment["fragment"].charge,
+            #                     workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+            #                     conformer_prefix=f"frag_ls_e{ei}_z{zi}_pre",
+            #                     constraints=constraints,
+            #                     force_constant=1.0,
+            #                     warming_constraints=True
+            #             )
+            #             pre_optimizer.run(basis="", method="XTB2", solvent="water", n_proc=self.threads, overwrite=False)
+                    
+            #         if ei + zi == 0:
+            #             last_file = str(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_pre_opt.pdb")
+            #         elif zi == 0:
+            #             last_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei-1}_z{zi}_opt.xyz"
+            #         else:
+            #             last_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi-1}_opt.xyz"
+            #         copt = ConformerOptimizer(
+            #                     input_file=str(last_file), 
+            #                     engine="xtb",
+            #                     charge=self.valid_fragment["fragment"].charge,
+            #                     workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+            #                     conformer_prefix=f"frag_ls_e{ei}_z{zi}",
+            #                     constraints=constraints,
+            #                     force_constant=1.0,
+            #                     warming_constraints=True
+            #         )
+            #         copt.run(basis="", method="XTB2", solvent="water", n_proc=self.threads, overwrite=False)
+            #         dihedral_constraints = [[(c[1]+360)%360, c[0]] for c in constraints]
+            #         atoms = read(str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.xyz"))
+            #         charges = np.zeros(len(atoms))
+            #         charges[0] = self.valid_fragment["fragment"].charge
+            #         atoms.set_initial_charges(charges)
+            #         max_attempts = 7
+            #         fmax = 0.010
+            #         epsilon=2e-5
+            #         max_epsilon = 0.1
+            #         for attempt in range(1, max_attempts+1):
+            #             try:
+            #                 calculate_relaxed_energy(atoms, xtb_calculator, fmax=fmax, epsilon=epsilon, logfile=str(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.log"), 
+            #                                         dihedral_constraints=dihedral_constraints, save=output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.xyz")
+            #                 break
+            #             except Exception as e:
+            #                 logger.warning(f"Attempt {attempt}/{max_attempts} failed: {e}")
+            #                 if attempt == max_attempts:
+            #                     logger.info("Max attempts reached, use restrained optimization.")
+            #                     break 
+            #                 logger.warning("Trying to reduce fmax.")
+            #                 fmax *= 1
+            #                 epsilon *= 5
+            #                 if epsilon > max_epsilon:
+            #                     epsilon = max_epsilon
+                            
+            #         del atoms
+            #         if os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.log"):
+            #             os.remove(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.log")
+ 
+        
+    
+    
+    
+    def gen(self, 
+            submit=False, 
+            local=False, 
+            overwrite=False,
+            overwrite_wfn=False,
+            training_fraction=0.2,
+            n_submit_groups=7
+        ):
+        output_dir = Path(self.output_dir).resolve()
         logger.info(f" >>> Output directory: {output_dir} <<<")
         self.fragmentize(output_dir)
         self.all_conformer_files = []
         self.slurm_files = []
         
-        logger.info(f"Scanning dihedral Epsilon / Zeta")
+        logger.info(f"Scanning dihedral Sugar / Epsilon / Zeta")
+        # xtb_calculator = XTB_calculator(
+        #     solvent="water",
+        #     charge=self.valid_fragment["fragment"].charge,
+        # )
         
-        # >>> 2D scanning: Epsilon / Zeta <<<
-        for ep in self.epsilon_grids:
-            dsc = DihedralScanner(
-                input_file=str(output_dir/f"fragment_epsilon_zeta/fragment.pdb"), 
-                dihedrals=[self.valid_fragment["zeta"]],
-                charge=self.valid_fragment["fragment"].charge,
-                workdir=str(output_dir/f"fragment_epsilon_zeta"),
-                conformer_prefix=f"frag_conformer_ep_{int(ep):03d}",
-                constraints=[[x["atom_index"], x["value"]] for x in self.valid_fragment["fragment_constraints"].values()]\
-                    + [[self.valid_fragment["epsilon"], ep]],
-                force_constant=1.0,  # Hartree/(Bohr**2)
-                warming_constraints=True
-            ) 
-
-            dsc.run_on_grids(
-                self.zeta_grids,
-                overwrite=overwrite
-            )
-            self.all_conformer_files.extend(dsc.conformers[self.valid_fragment["zeta"]])
-    
+        if not self.is_sugar_locked():
+            for si, sangle in enumerate(self.sugar_grids):
+                for ei, ep in enumerate(self.epsilon_grids):
+                    for zi, zeta in enumerate(self.zeta_grids):
+                        self.all_conformer_files.append(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.xyz")
+                        if (not overwrite) and os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.xyz"):
+                            # logger.info(f"File exists, skipping {output_dir/f'frag_s{si}_e{ei}_z{zi}_opt.xyz'}")
+                            continue
+                        logger.info(f"Generating data for sugar {sangle}, epsilon {ep}, zeta {zeta}, frag_s{si}_e{ei}_z{zi}")
+                        constraints = [
+                            [self.valid_fragment["epsilon"], ep],
+                            [self.valid_fragment["zeta"], zeta],
+                            [self.valid_fragment["sugar-occo"], sangle],
+                        ] + [[x["atom_index"], x["value"]] for x in self.valid_fragment["fragment_constraints"].values()]
+                        
+                        
+                        # if si + ei + zi == 0:
+                        #     last_file = str(output_dir/f"fragment_sugar_epsilon_zeta/fragment.pdb")
+                        #     pre_optimizer = ConformerOptimizer(
+                        #             input_file=str(last_file), 
+                        #             engine="xtb",
+                        #             charge=self.valid_fragment["fragment"].charge,
+                        #             workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+                        #             conformer_prefix=f"frag_s{si}_e{ei}_z{zi}_pre",
+                        #             constraints=constraints,
+                        #             force_constant=0.5,
+                        #             warming_constraints=True
+                        #     )
+                        #     pre_optimizer.run(basis="", method="XTB2", solvent="water", n_proc=self.threads, overwrite=False)
+                        
+                        # if si + ei + zi == 0:
+                        #     last_file = str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_pre_opt.xyz")
+                        # elif ei + zi == 0:
+                        #     last_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si-1}_e{ei}_z{zi}_opt.xyz"
+                        # elif zi == 0:
+                        #     last_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei-1}_z{zi}_opt.xyz"
+                        # else:
+                        #     last_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi-1}_opt.xyz"
+                        
+                        # try:
+                            
+                        # except Exception as e:
+                        #     copt = ConformerOptimizer(
+                        #             input_file=str(last_file), 
+                        #             engine="xtb",
+                        #             charge=self.valid_fragment["fragment"].charge,
+                        #             workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+                        #             conformer_prefix=f"frag_s{si}_e{ei}_z{zi}",
+                        #             constraints=constraints,
+                        #             force_constant=0.8,
+                        #             warming_constraints=True
+                        #     )
+                        #     copt.run(basis="", method="XTB2", solvent="water", n_proc=self.threads, overwrite=overwrite)
+                        # copt = ConformerOptimizer(
+                        #             input_file=str(last_file), 
+                        #             engine="xtb",
+                        #             charge=self.valid_fragment["fragment"].charge,
+                        #             workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+                        #             conformer_prefix=f"frag_s{si}_e{ei}_z{zi}_tmp",
+                        #             constraints=constraints,
+                        #             force_constant=0.5,
+                        #             warming_constraints=True
+                        #     )
+                        # copt.run(solvent="water", n_proc=self.threads, overwrite=overwrite)
+                        
+                        # copt = ConformerOptimizer(
+                        #             input_file=str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_tmp_opt.xyz"), 
+                        #             engine="orca",
+                        #             charge=self.valid_fragment["fragment"].charge,
+                        #             workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+                        #             conformer_prefix=f"frag_s{si}_e{ei}_z{zi}",
+                        #             constraints=constraints,
+                        #             # force_constant=0.5,
+                        #             warming_constraints=True
+                        #     )
+                        # copt.run(basis="", method="XTB2", solvent="water", n_proc=self.threads, overwrite=overwrite)
+                        # if os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_tmp_opt.xyz"):
+                        #     os.remove(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_tmp_opt.xyz")    
+                        
+        #                 dihedral_constraints = [[(c[1]+360)%360, list(c[0])] for c in constraints]
+        #                 atoms = read(str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.xyz"))
+        #                 charges = np.zeros(len(atoms))
+        #                 charges[0] = self.valid_fragment["fragment"].charge
+        #                 atoms.set_initial_charges(charges)
+        #                 max_attempts = 7
+        #                 fmax = 0.010
+        #                 epsilon=2.5*1e-5
+        #                 xtb_calculator = XTB_calculator(
+        #                     solvent="water",
+        #                     charge=self.valid_fragment["fragment"].charge,
+        #                 )
+        #                 for attempt in range(1, max_attempts+1):
+        #                     try:
+        #                         calculate_relaxed_energy(atoms, xtb_calculator, fmax=fmax, epsilon=epsilon, steps=1000, logfile=str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.log"), 
+        #                                                 dihedral_constraints=dihedral_constraints, save=output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.xyz")
+        #                         break
+        #                     except Exception as e:
+        #                         logger.warning(f"Attempt {attempt}/{max_attempts} failed: {e}")
+        #                         if attempt == max_attempts:
+        #                             try:
+        #                                 logger.info("relaxed energy minimization.")
+        #                                 calculate_relaxed_energy(atoms, xtb_calculator, fmax=0.05, epsilon=0.40, steps=2000, logfile=str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.log"), 
+        #                                                 dihedral_constraints=dihedral_constraints, save=output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.xyz")
+        #                             except Exception as e:
+        #                                 logger.info("Max attempts reached, use restrained optimization.")
+        #                                 break 
+        #                         logger.warning("Trying to reduce fmax.")
+        #                         fmax *= 1
+        #                         epsilon *= 5
+                                
+        #                 del atoms
+        #                 if os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.log"):
+        #                     os.remove(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.log")
+        # else:
+            # logger.warning("Sugar is locked, only scan epsilon zeta.")
+            # for ei, ep in enumerate(self.epsilon_grids):
+            #     for zi, zeta in enumerate(self.zeta_grids):
+            #         print(f"Generating data for, epsilon {ep}, zeta {zeta}. [locked sugar]")
+            #         constraints = [
+            #             [self.valid_fragment["epsilon"], ep],
+            #             [self.valid_fragment["zeta"], zeta],
+            #         ] + [[x["atom_index"], x["value"]] for x in self.valid_fragment["fragment_constraints"].values()]
+            #         self.all_conformer_files.append(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.xyz")
+            #         if os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.xyz"):
+            #             continue
+                    
+            #         if ei + zi == 0:
+            #             last_file = str(output_dir/f"fragment_sugar_epsilon_zeta/fragment.pdb")
+            #             pre_optimizer = ConformerOptimizer(
+            #                     input_file=str(last_file), 
+            #                     engine="xtb",
+            #                     charge=self.valid_fragment["fragment"].charge,
+            #                     workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+            #                     conformer_prefix=f"frag_ls_e{ei}_z{zi}_pre",
+            #                     constraints=constraints,
+            #                     force_constant=1.0,
+            #                     warming_constraints=True
+            #             )
+            #             pre_optimizer.run(basis="", method="XTB2", solvent="water", n_proc=self.threads, overwrite=False)
+                    
+            #         if ei + zi == 0:
+            #             last_file = str(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_pre_opt.pdb")
+            #         elif zi == 0:
+            #             last_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei-1}_z{zi}_opt.xyz"
+            #         else:
+            #             last_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi-1}_opt.xyz"
+            #         copt = ConformerOptimizer(
+            #                     input_file=str(last_file), 
+            #                     engine="xtb",
+            #                     charge=self.valid_fragment["fragment"].charge,
+            #                     workdir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+            #                     conformer_prefix=f"frag_ls_e{ei}_z{zi}",
+            #                     constraints=constraints,
+            #                     force_constant=1.0,
+            #                     warming_constraints=True
+            #         )
+            #         copt.run(basis="", method="XTB2", solvent="water", n_proc=self.threads, overwrite=False)
+            #         dihedral_constraints = [[(c[1]+360)%360, c[0]] for c in constraints]
+            #         atoms = read(str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.xyz"))
+            #         charges = np.zeros(len(atoms))
+            #         charges[0] = self.valid_fragment["fragment"].charge
+            #         atoms.set_initial_charges(charges)
+            #         max_attempts = 7
+            #         fmax = 0.010
+            #         epsilon=2e-5
+            #         max_epsilon = 0.1
+            #         for attempt in range(1, max_attempts+1):
+            #             try:
+            #                 calculate_relaxed_energy(atoms, xtb_calculator, fmax=fmax, epsilon=epsilon, logfile=str(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.log"), 
+            #                                         dihedral_constraints=dihedral_constraints, save=output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.xyz")
+            #                 break
+            #             except Exception as e:
+            #                 logger.warning(f"Attempt {attempt}/{max_attempts} failed: {e}")
+            #                 if attempt == max_attempts:
+            #                     logger.info("Max attempts reached, use restrained optimization.")
+            #                     break 
+            #                 logger.warning("Trying to reduce fmax.")
+            #                 fmax *= 1
+            #                 epsilon *= 5
+            #                 if epsilon > max_epsilon:
+            #                     epsilon = max_epsilon
+                            
+            #         del atoms
+            #         if os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.log"):
+            #             os.remove(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.log")
+ 
+        if training_fraction <= 1.:
+            n_training_conformers = int(len(self.all_conformer_files) * training_fraction) + 1
+        else:
+            n_training_conformers = training_fraction
+        self.training_conformers = select_from_list(self.all_conformer_files, n_training_conformers, method="even")
+        if self.valid_fragment["fragment"].charge != 0:
+            logger.warning(f"Fragment has charge {self.valid_fragment['fragment'].charge}")
+            logger.warning(f"Please use appropriate QM methods for charged fragments")
         for idx, conf in enumerate(self.all_conformer_files):
-            slurm_file = (output_dir/f"fragment_epsilon_zeta/conf{idx}.slurm").resolve()
-            if self.valid_fragment["fragment"].charge != 0:
-                logger.warning(f"Fragment has charge {self.valid_fragment['fragment'].charge}")
-                logger.warning(f"Please use appropriate QM methods for charged fragments")
+            if conf not in self.training_conformers:
+                continue
+            if not overwrite_wfn and ((os.path.exists(conf.with_suffix(".psi4.log")) and not self.aqueous) \
+                or (os.path.exists(conf.with_suffix(".molden")) and self.aqueous)):
+                continue
+            slurm_file = (output_dir/f"fragment_sugar_epsilon_zeta/{conf.stem}.slurm").resolve()
             self.write_script(
                 slurm_filename=slurm_file,
                 input_file=str(conf),
-                output_dir=(output_dir/f"fragment_epsilon_zeta").resolve(),
+                output_dir=(output_dir/f"fragment_sugar_epsilon_zeta").resolve(),
                 charge=self.valid_fragment["fragment"].charge,
-                local=local,
+                local=True,
                 aqueous=self.aqueous
             )
             self.slurm_files.append(slurm_file)
-            
-            if not overwrite and ((os.path.exists(conf.with_suffix(".psi4.log")) and not self.aqueous) \
-                or (os.path.exists(conf.with_suffix(".molden")) and self.aqueous)):
-                continue
-            
-            cwd = Path.cwd().resolve()
-            os.chdir(output_dir)
-            if local:
+        cwd = Path.cwd().resolve()
+        
+        if len(self.slurm_files) == 0:
+            logger.warning("No slurm files generated.")
+            return
+
+        if local:
+            for slurm_file in self.slurm_files:
+                os.chdir(output_dir/f"fragment_sugar_epsilon_zeta")
                 logger.info(f"Running {slurm_file}")
                 os.system(f"bash {slurm_file}")
                 os.remove(slurm_file)
-            elif submit:
-                logger.info(f"Submiting {slurm_file}")
-                os.system(f"LLsub {slurm_file}")
-            for suffix in [".gbw", ".cpcm", ".densities"]:
-                if os.path.exists(conf.with_suffix(suffix)):
-                    os.remove(conf.with_suffix(suffix))
-            os.chdir(cwd)
-            
-            
-    def optimize(self, overwrite=False, suffix=""):
-        output_dir = Path(self.output_dir)
-        logger.info(f"Optimizing fragment Epsilon / Zeta")
-        logger.info(f"calculating atomic charges for fragment Epsilon / Zeta")
-        frag_dir = output_dir/f"fragment_epsilon_zeta"
-        # get atomic charges
-        # >>>    CHARGE    <<<
-        charged_mol2 = frag_dir/f"{self.all_conformer_files[0].stem}.resp.mol2"
-        if overwrite or (not os.path.exists(charged_mol2)):
-            RESP_fragment(
-                select_from_list(self.all_conformer_files, self.resp_n_conformers, method="even"),
-                self.valid_fragment["fragment"].charge,
-                str(frag_dir),
-                self.mol_name,
-                memory=self.memory, 
-                n_threads=self.threads, 
-                method_basis=f"{self.resp_method}/{self.resp_basis}",
-            )
-        else:
-            logger.info(f"File exised, using existing charge file {charged_mol2}.")
-        charged_pmd_mol = pmd.load_file(str(charged_mol2))
-        logger.info("Parameterizing fragment")
-        parm7 = frag_dir/f"{self.mol_name}_frag_epsilon_zeta.parm7"
-        
-        if self.aqueous:
-            addons = ["set default PBRadii mbondi"]
-        else:
-            addons = []
-        self.parameterize(str(output_dir/"fragment_epsilon_zeta/fragment.pdb"), 
-                          frag_dir, prefix=f"{self.mol_name}_frag_epsilon_zeta", 
-                          addons=addons,  mod_atom_types={
-                              self.valid_fragment["fragment"].parent_fragment_mapping[self.mol_suger_symbol_index["OP1"]]: "OP",
-                              self.valid_fragment["fragment"].parent_fragment_mapping[self.mol_suger_symbol_index["OP2"]]: "OP",
-                              self.valid_fragment["fragment"].parent_fragment_mapping[self.mol_suger_symbol_index["O3'"]]: "OR",
-                              self.valid_fragment["fragment"].parent_fragment_mapping[self.mol_suger_symbol_index["O52"]]: "OR",
-                              self.valid_fragment["fragment"].parent_fragment_mapping[self.mol_suger_symbol_index["C01"]]: "CI",
-                          })
-        
-        parm_mol = pmd.load_file(str(parm7))
-        for idx, atom in enumerate(parm_mol.atoms):
-            atom.charge = charged_pmd_mol.atoms[idx].charge
-        
-        # START  >>> turn off the dihedral terms along the rotatable bond <<<
-        idx_list_epsilon = self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["epsilon"])
-        idx_list_zeta = self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["zeta"])
-        assert len(idx_list_epsilon) > 0, f"No dihedral term found for fragment Epsilon." 
-        assert len(idx_list_zeta) > 0, f"No dihedral term found for fragment Zeta."
-        for idx_list in [idx_list_epsilon, idx_list_zeta]:
-            for dih_idx in idx_list:
-                parm_mol.dihedrals[dih_idx].type.phi_k = 0.0
-        logger.info(f'collecting QM and MM Energies for fragment Epsilon / Zeta')
-        
-        dihedrals = {}
-        mm_energies = []
-        qm_energies = []
-        conf_names = []
+                for suffix in [".gbw", ".cpcm", ".densities"]:
+                    if os.path.exists(conf.with_suffix(suffix)):
+                        os.remove(conf.with_suffix(suffix))
+                os.chdir(cwd)
 
-        for conf in self.all_conformer_files:
-            # >> read QM energy
-            if self.aqueous:
-                log_file = conf.parent/f"{conf.stem}_property.txt"
-                qm_energy = read_energy_from_txt(log_file)
-            else:
-                log_file = conf.with_suffix(".psi4.log")
-                qm_energy = read_energy_from_log(log_file)
-            # >> calculate MM energy
-            conf_mol = rd_load_file(str(conf))
-            # unit from RDkit is Angstrom, convert to nm by dividing 10.
-            positions = np.array(conf_mol.GetConformer().GetPositions()) / 10.
-            
-            parm_mol.positions = positions
-            # >> NEW VERSION [ALL dihedral terms were considered]
-            
-            mm_restraints = []
-            dihedral_each_conf = {}
-
-            dihedral_degree_epsilon = float(parm_mol.dihedrals[self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["epsilon"])[0]].measure())
-            dihedral_degree_zeta = float(parm_mol.dihedrals[self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["zeta"])[0]].measure())
-            dihedral_each_conf["epsilon"] = dihedral_degree_epsilon / 180.0 * np.pi
-            dihedral_each_conf["zeta"] = dihedral_degree_zeta / 180.0 * np.pi
-            mm_restraints.append({"atom_index": self.valid_fragment["epsilon"], "value": dihedral_degree_epsilon})
-            mm_restraints.append({"atom_index": self.valid_fragment["zeta"], "value": dihedral_degree_zeta})
-            mm_restraints.extend([x for x in self.valid_fragment["fragment_constraints"].values()])
-            logger.info(conf.stem)
-            
-            mm_energy = self.calculate_mm_energy(parm_mol, positions, implicit_solvent=self.aqueous,
-                                                    optimize=True, 
-                                                    restraints=mm_restraints,
-                                                    save=False, 
-                                                    output_file=f"{conf.stem}_mm_opmized.pdb")
-                                                    # output_file=conf.parent/f"{conf.stem}_mm_optimized.pdb")
-            dihedrals[conf.stem] = dihedral_each_conf
-            mm_energies.append(mm_energy)
-            qm_energies.append(qm_energy * Hatree2kCalPerMol)
-            conf_names.append(conf.stem)
-
-        mm_energy = np.array(mm_energies)
-        qm_energy = np.array(qm_energies)
-        mm_energy = mm_energy - mm_energy.min()
-        qm_energy = qm_energy - qm_energy.min()
-        self.conformer_data = {}
-        for idx, conf_name in enumerate(conf_names):
-            self.conformer_data[conf_name] = {
-                    # "dihedral": float(dihedrals[idx]),
-                    "dihedral": dihedrals[conf_name],
-                    "mm_energy": float(mm_energy[idx]),
-                    "qm_energy": float(qm_energy[idx])
-                }
-        optimizer = TorsionOptimizer(self.order, self.panelty_weight, self.threshold, fix_phase=self.fix_phase, n_dihedrals=2)
-        # of shape [n_conformers, n_dihedrals]
-        dihedral_value_matrix = np.array([[dihedrals[conf_name][x] for x in ["epsilon", "zeta"]] for conf_name in conf_names])
-        
-        optimizer.infer_parameters(
-            dihedrals=dihedral_value_matrix,
-            energy_mm=mm_energy,
-            energy_qm=qm_energy,
-            pairwise=self.pairwise
-        )
-        self.parameter_set = optimizer.get_parameters()
-
-        self.parameter_set["dihedral"] = ["epsilon", "zeta"]
-        
-        save_to_yaml(self.conformer_data, output_dir/f"conformer_epsilon_zeta{suffix}.yaml")
-        save_to_yaml(self.parameter_set, output_dir/f"parameter_epsilon_data{suffix}.yaml")
+        elif submit:
+            n_files_pergroup = np.ones(n_submit_groups) * (len(self.slurm_files) // n_submit_groups)
+            n_files_pergroup[:len(self.slurm_files) % n_submit_groups] += 1
+            n_files_pergroup = n_files_pergroup.astype(int).tolist()
+            assert np.sum(n_files_pergroup) == len(self.slurm_files)
+            for gi, n_files in enumerate(n_files_pergroup):
+                if gi == 0:
+                    group = self.slurm_files[:n_files]
+                else:
+                    group = self.slurm_files[sum(n_files_pergroup[:gi]):sum(n_files_pergroup[:gi+1])]
+                with open(output_dir/f"fragment_sugar_epsilon_zeta/submit_group_{gi}.sh", "w") as f:
+                    f.write(SLURM_HEADER_CPU)
+                    for g in group:
+                        command = g.open("r").readlines()[1].strip()
+                        f.write(f"{command}\n")
+                        for suffix in [".gbw", ".cpcm", ".densities"]:
+                            f.write(f"rm {g.with_suffix(suffix)}\n")
+                        os.remove(g)
+                os.chdir(output_dir/f"fragment_sugar_epsilon_zeta")
+                logger.info(f"Submiting submit_group_{gi}.sh")
+                os.system(f"LLsub submit_group_{gi}.sh -s {self.threads}")
+                os.chdir(cwd)
+            logger.info("All jobs submitted. Program will exit.")
+            exit(0)
     
-    def getCMAP(self, overwrite=False, suffix=""):
-        output_dir = Path(self.output_dir)
+    def prepare_training_data(self, overwrite=False):
+        output_dir = Path(self.output_dir).resolve()
+        self.dataset_file = output_dir / "dataset.sugar_epsilon_zeta.h5"
+        if os.path.exists(self.dataset_file) and (not overwrite):
+            logger.warning(f"Dataset file {self.dataset_file} already exists.")
+            return
+        for conf in self.training_conformers:
+            if os.path.exists(conf.with_suffix(".chg")):
+                continue
+            wfn_file = conf.with_suffix(".molden").resolve()
+            logger.info(f"Calculating atomic charges for {conf.stem}")
+            GetCharges(wfn_file, n_proc=self.threads, \
+                log_file=str(output_dir/"fragment_sugar_epsilon_zeta"/"multiwfn.log"), workdir=output_dir/"fragment_sugar_epsilon_zeta")
+            
+        output_dir = Path(self.output_dir).resolve()
+        all_force_list = []
+        all_energy_list = []
+        all_xyz_list = []
+        all_charge_list = []
+        all_charges_list = []
+        all_number_list = []
+        for conf in self.training_conformers:
+            xyz_info = parse_xyz_file(conf)
+            xyz_info["charge"] = np.array([1,]).reshape(1,) * int(self.valid_fragment["fragment"].charge)
+            n_atoms = xyz_info["numbers"].shape[-1]
+            energy_file = (output_dir/f"fragment_sugar_epsilon_zeta") / f"{conf.stem}.property.json"
+            energy = read_energy_from_txt(str(energy_file), source="orca", fmt="json")  # unit Hartree
+            force_file = (output_dir/f"fragment_sugar_epsilon_zeta") / f"{conf.stem}.engrad"
+            force = read_orca_engrad(force_file)
+            charges = read_charges(conf.with_suffix(".chg"))
+            all_force_list.append(force)
+            all_energy_list.append(energy*27.2114)
+            all_xyz_list.append(xyz_info["coord"])
+            all_charge_list.append(xyz_info["charge"])
+            all_charges_list.append(charges)
+            assert np.isclose(np.sum(charges), xyz_info["charge"])
+            all_number_list.append(xyz_info["numbers"])
+        # Create an HDF5 file
+        
+        traning_size = len(self.training_conformers)
+        with h5py.File(self.dataset_file, 'w') as f:
+            data_specs = {
+                f'{n_atoms:03d}': {'size': traning_size, 'atoms': n_atoms},
+            }
+            # Loop through the specifications to create groups and datasets
+            for group_name, spec in data_specs.items():
+                group = f.create_group(group_name)
+                # Create datasets within the group
+                group.create_dataset('charge', data=torch.tensor(all_charge_list).reshape(traning_size,).float())
+                group.create_dataset('charges', data=torch.tensor(all_charges_list).reshape(traning_size,n_atoms).float())
+                group.create_dataset('coord', data=torch.tensor(all_xyz_list).reshape(traning_size,n_atoms,3).float())
+                group.create_dataset('energy', data=torch.tensor(all_energy_list).reshape(traning_size,).float())
+                group.create_dataset('forces', data=torch.tensor(all_force_list).reshape(traning_size,n_atoms,3).float())
+                group.create_dataset('numbers', data=torch.tensor(all_number_list).reshape(traning_size,n_atoms).int())
+
+        logger.info("HDF5 file 'dataset.h5' created successfully!")
+                    
+    def train_nnp(self):
+        output_dir = Path(self.output_dir).resolve()
+        train_config_file = Path(__file__).parent.parent / "data" / "aimnet2_default_train.yaml"
+        config = yaml.safe_load(open(train_config_file, "r"))
+        model_dirs = output_dir / "model"
+        model_dirs.mkdir(exist_ok=True)
+        config["run_name"] = f"{self.mol_name}_sugar_epsilon_zeta"
+        config["data"]["val_fraction"] = round(32/len(self.training_conformers), 2)
+        config["data"]["train"] = str(self.dataset_file.resolve())
+        config["data"]["samplers"]["train"]["kwargs"]["batch_size"] = 5.
+        config["data"]["samplers"]["train"]["kwargs"]["batches_per_epoch"] = -1
+        config["data"]["samplers"]["val"]["kwargs"]["batch_size"] = 30
+        config["optimizer"]["kwargs"]["lr"] = 0.00005
+        config["trainer"]["epochs"] = self.train_epochs
+        self.sae_file = str((model_dirs / "dataset.sugar_epsilon_zeta.sae.yaml").resolve())
+        os.system(f"aimnet calc_sae {self.dataset_file} {self.sae_file} --samples {len(self.training_conformers)}")
+        config["data"]["sae"]["energy"]["file"] = self.sae_file
+        
+        config_yaml_file = model_dirs/f"{self.mol_name}_sugar_epsilon_zeta_train_config.yaml"
+        with open(config_yaml_file, "w") as fp:
+            yaml.dump(config, fp)
+        
+        pretrained_model = self.pretrained_model_path
+        output_model = model_dirs/f"{self.mol_name}_sugar_epsilon_zeta.pth"
+        jitted_model = model_dirs/f"{self.mol_name}_sugar_epsilon_zeta_jitted.pth"
+        self.jitted_model = jitted_model
+        training_command = f"OMP_NUM_THREADS=1 python {Path(__file__).parent.parent}/nnp/train.py "\
+                    f"--config {config_yaml_file} --pretrained_model {pretrained_model} "\
+                    f"--output_model {output_model} --jitted_model {jitted_model}"
+        logger.info(f"Training command: {training_command}")
+        # exit(0)
+        if not os.path.exists(jitted_model):
+            os.system( training_command )
+   
+    def getCMAP(self, overwrite=False, suffix="", jitted_model_path=None, mm_force_constant=500):
+        output_dir = Path(self.output_dir).resolve()
         logger.info(f"Optimizing fragment Epsilon / Zeta")
         logger.info(f"calculating atomic charges for fragment Epsilon / Zeta")
-        frag_dir = output_dir/f"fragment_epsilon_zeta"
+        frag_dir = output_dir/f"fragment_sugar_epsilon_zeta"
         # get atomic charges
         # >>>    CHARGE    <<<
         charged_mol2 = frag_dir/f"{self.all_conformer_files[0].stem}.resp.mol2"
@@ -2444,69 +2886,179 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
             raise RuntimeError(f"Unknown alpha gamma style {self.alpha_gamma_style}")
         
         parm7 = frag_dir/f"{self.mol_name}_frag_epsilon_zeta_{self.phosphate_style}P_{self.alpha_gamma_style}ag.parm7"
-        self.parameterize(str(output_dir/"fragment_epsilon_zeta/fragment.pdb"), 
+        self.parameterize(str(output_dir/"fragment_sugar_epsilon_zeta/fragment.pdb"), 
                           frag_dir, prefix=f"{self.mol_name}_frag_epsilon_zeta_{self.phosphate_style}P_{self.alpha_gamma_style}ag", 
                           addons=addons,  mod_atom_types=modified_atom_types)
-        # parm7 = "/home/gridsan/ywang3/Project/Capping/test_parameterization/test_patch/CR2_frag_epsilon_zeta_cmap_linear.parm7"
-        # parm7 = "/home/gridsan/ywang3/Project/Capping/test_parameterization/test_patch/CR2_frag_epsilon_zeta_cmap_cubic.parm7"
         parm_mol = pmd.load_file(str(parm7))
         for idx, atom in enumerate(parm_mol.atoms):
             atom.charge = charged_pmd_mol.atoms[idx].charge
         logger.info(f'collecting QM and MM Energies for fragment Epsilon / Zeta')
         
         dihedrals = {}
+        mm_energies_dict = {}
+        openmm_calculator = OpenMMCalculator(parm_mol)
+        if os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/mm_energy.yaml"):
+            with open(output_dir/f"fragment_sugar_epsilon_zeta/mm_energy.yaml", "r") as f:
+                mm_energies_dict = yaml.load(f, Loader=yaml.FullLoader)
+
+        for si, sangle in enumerate(self.sugar_grids):
+            for ei, ep in enumerate(self.epsilon_grids):
+                for zi, zeta in enumerate(self.zeta_grids):
+                    conf_file = output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.xyz"
+                    dihedrals[conf_file.stem] = {
+                        "epsilon": float(ep / 180.0 * np.pi),
+                        "zeta": float(zeta / 180.0 * np.pi),
+                        "sugar": float(sangle / 180.0 * np.pi)
+                    }
+                    if (conf_file.stem in mm_energies_dict) :
+                        continue
+                    
+                    logger.info(f"Calculate MM energy for sugar {sangle}, epsilon {ep}, zeta {zeta}, frag_s{si}_e{ei}_z{zi}")
+                    constraints = [
+                        [self.valid_fragment["epsilon"], ep],
+                        [self.valid_fragment["zeta"], zeta],
+                        [self.valid_fragment["sugar-occo"], sangle],
+                    ] + [[x["atom_index"], x["value"]] for x in self.valid_fragment["fragment_constraints"].values()]
+                    dihedral_constraints = [[(c[1]+360)%360, c[0]] for c in constraints]
+                    
+                    atoms = read(str(conf_file))
+                    charges = np.zeros(len(atoms))
+                    charges[0] = self.valid_fragment["fragment"].charge
+                    atoms.set_initial_charges(charges)
+                    max_attempts = 7
+                    fmax = 0.010
+                    epsilon=2e-5
+                    for attempt in range(1, max_attempts+1):
+                        try:
+                            mm_energy = calculate_relaxed_energy(atoms, openmm_calculator, fmax=fmax, epsilon=epsilon, steps=2000,
+                                                    logfile=str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.log"), 
+                                                    dihedral_constraints=dihedral_constraints, save=None)
+                            logger.info(f"MM energy for {conf_file.stem}: {mm_energy}")
+                            break
+                        except Exception as e:
+                            logger.warning(f"Attempt {attempt}/{max_attempts} failed: {e}")
+                            if attempt == max_attempts:
+                                logger.info("Max attempts reached. use more relaxed optimization.")
+                                mm_energy = calculate_relaxed_energy(atoms, openmm_calculator, fmax=0.050, epsilon=0.65, steps=2000,
+                                                    logfile=str(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.log"), 
+                                                    dihedral_constraints=dihedral_constraints, save=None)
+                                logger.info(f"MM energy for {conf_file.stem}: {mm_energy}")
+                                # raise RuntimeError("Max attempts reached.") 
+                            logger.warning(f"Trying to reduce fmax. fmax={fmax} epsilon={epsilon}")
+                            fmax *= 1
+                            epsilon *= 8
+                    del atoms
+                    if os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.log"):
+                        os.remove(output_dir/f"fragment_sugar_epsilon_zeta/frag_s{si}_e{ei}_z{zi}_opt.log")
+                    
+                    mm_energies_dict[conf_file.stem] = mm_energy
+            
+                save_to_yaml(mm_energies_dict, output_dir/f"fragment_sugar_epsilon_zeta/mm_energy.yaml")
+        save_to_yaml(dihedrals, output_dir/f"fragment_sugar_epsilon_zeta/dihedrals.yaml")
+            
+        
+        # calculate nnp_energy
+        if jitted_model_path is not None and (not os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/energy.nnp.json")):
+            all_files = " ".join([str(conf) for conf in self.all_conformer_files])
+            command  = f"python {Path(__file__).parent.parent}/nnp/calculate_energy.py "\
+                f"--charge {int(self.valid_fragment['fragment'].charge)} "\
+                f"--file-list {all_files} --jitted-model-path {jitted_model_path} "\
+                f"--output-file {output_dir}/fragment_sugar_epsilon_zeta/energy.nnp.json"
+            with open(output_dir/f"fragment_sugar_epsilon_zeta/run_nnp.sh", "w") as f:
+                f.write(command)
+            exit_code = os.system(f"bash {output_dir}/fragment_sugar_epsilon_zeta/run_nnp.sh")
+            if exit_code != 0:
+                raise RuntimeError(f"NNP calculation failed with exit code {exit_code}")
+        
+            with open(output_dir/f"fragment_sugar_epsilon_zeta/energy.nnp.json", "r") as f:
+                ref_energy_data = json.load(f)  # unit: eV
+        else:
+            with open(output_dir/f"fragment_sugar_epsilon_zeta/energy.nnp.json", "r") as f:
+                ref_energy_data = json.load(f)
+        
         mm_energies = []
-        qm_energies = []
+        ref_energies = []
         conf_names = []
-
         for conf in self.all_conformer_files:
-            # >> read QM energy
-            if self.aqueous:
-                log_file = conf.parent/f"{conf.stem}_property.txt"
-                qm_energy = read_energy_from_txt(log_file)
-            else:
-                log_file = conf.with_suffix(".psi4.log")
-                qm_energy = read_energy_from_log(log_file)
-            # >> calculate MM energy
-            conf_mol = rd_load_file(str(conf))
-            # unit from RDkit is Angstrom, convert to nm by dividing 10.
-            positions = np.array(conf_mol.GetConformer().GetPositions()) / 10.
-            
-            parm_mol.positions = positions            
-            mm_restraints = []
-            dihedral_each_conf = {}
-
-            dihedral_degree_epsilon = float(parm_mol.dihedrals[self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["epsilon"])[0]].measure())
-            dihedral_degree_zeta = float(parm_mol.dihedrals[self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["zeta"])[0]].measure())
-            dihedral_each_conf["epsilon"] = dihedral_degree_epsilon / 180.0 * np.pi
-            dihedral_each_conf["zeta"] = dihedral_degree_zeta / 180.0 * np.pi
-            mm_restraints.append({"atom_index": self.valid_fragment["epsilon"], "value": dihedral_degree_epsilon})
-            mm_restraints.append({"atom_index": self.valid_fragment["zeta"], "value": dihedral_degree_zeta})
-            mm_restraints.extend([x for x in self.valid_fragment["fragment_constraints"].values()])
-            logger.info(conf.stem)
-            
-            mm_energy = self.calculate_mm_energy(parm_mol, positions, implicit_solvent=self.aqueous,
-                                                    optimize=True, 
-                                                    restraints=mm_restraints,
-                                                    save=False, 
-                                                    output_file=f"{conf.stem}_mm_opmized.pdb")
-                                                    # output_file=conf.parent/f"{conf.stem}_mm_optimized.pdb")
-            dihedrals[conf.stem] = dihedral_each_conf
-            mm_energies.append(mm_energy)
-            qm_energies.append(qm_energy * Hatree2kCalPerMol)
+            ref_energies.append(ref_energy_data[conf.stem] * 23.0605)  # convert eV to kcal/mol
+            mm_energies.append(mm_energies_dict[conf.stem] * 23.0605)
             conf_names.append(conf.stem)
+            
 
-        mm_energy = np.array(mm_energies)
-        qm_energy = np.array(qm_energies)
-        mm_energy = mm_energy - mm_energy.min()
-        qm_energy = qm_energy - qm_energy.min()
+        mm_energies = np.array(mm_energies)
+        ref_energies = np.array(ref_energies)
+        mm_energies = mm_energies - mm_energies.min()
+        ref_energies = ref_energies - ref_energies.min()
         self.conformer_data = {}
         for idx, conf_name in enumerate(conf_names):
             self.conformer_data[conf_name] = {
-                    # "dihedral": float(dihedrals[idx]),
                     "dihedral": dihedrals[conf_name],
-                    "mm_energy": float(mm_energy[idx]),
-                    "qm_energy": float(qm_energy[idx])
-                }        
-        save_to_yaml(self.conformer_data, output_dir/f"conformer_cmap_epsilon_zeta_{self.phosphate_style}P_{self.alpha_gamma_style}ag{suffix}.yaml")
+                    "mm_energy": float(mm_energies[idx]),
+                    "qm_energy": float(ref_energies[idx])
+                }    
+        self.cmap_file = output_dir/f"conformer_sugar_epsilon_zeta_{self.phosphate_style}P_{self.alpha_gamma_style}ag{suffix}_nnp.yaml"    
+        save_to_yaml(self.conformer_data, self.cmap_file)
+        logger.info(f"CMAP file saved to {self.cmap_file}")
+    
+        #     for conf in self.all_conformer_files:            
+        #         # >> calculate MM energy
+        #         # conf_mol = rd_load_file(str(conf))
+        #         # # unit from RDkit is Angstrom, convert to nm by dividing 10.
+        #         # positions = np.array(conf_mol.GetConformer().GetPositions()) / 10.
+                
+        #         # parm_mol.positions = positions            
+        #         # mm_restraints = []
+        #         # dihedral_each_conf = {}
+
+        #         # dihedral_degree_epsilon = float(parm_mol.dihedrals[self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["epsilon"])[0]].measure())
+        #         # dihedral_degree_zeta = float(parm_mol.dihedrals[self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["zeta"])[0]].measure())
+        #         # dihedral_degree_sugar = float(parm_mol.dihedrals[self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["sugar-occo"])[0]].measure())
+
+        #         # dihedral_each_conf["epsilon"] = dihedral_degree_epsilon / 180.0 * np.pi
+        #         # dihedral_each_conf["zeta"] = dihedral_degree_zeta / 180.0 * np.pi
+        #         # dihedral_each_conf["sugar"] = dihedral_degree_sugar / 180.0 * np.pi
+
+        #         # mm_restraints.append({"atom_index": self.valid_fragment["epsilon"], "value": dihedral_degree_epsilon})
+        #         # mm_restraints.append({"atom_index": self.valid_fragment["zeta"], "value": dihedral_degree_zeta})
+        #         # mm_restraints.append({"atom_index": self.valid_fragment["sugar-occo"], "value": dihedral_degree_sugar})
+        #         # mm_restraints.extend([x for x in self.valid_fragment["fragment_constraints"].values()])
+        #         # logger.info(conf.stem)
+                
+        #         calculate_relaxed_energy(coords_files, openmm_calculator, dihedral_constraints=None, save=None)
+        #         mm_energy = self.calculate_mm_energy(parm_mol, positions, implicit_solvent=self.aqueous,
+        #                                                 optimize=True, 
+        #                                                 restraints=mm_restraints,
+        #                                                 save=False, 
+        #                                                 force_constant=mm_force_constant,
+        #                                                 output_file=f"{conf.stem}_mm_opmized.pdb")
+        #                                                 # output_file=conf.parent/f"{conf.stem}_mm_optimized.pdb")
+        #         dihedrals[conf.stem] = dihedral_each_conf
+        #         mm_energies.append(mm_energy)
+        #         conf_names.append(conf.stem)
+        #         mm_energies_dict[conf.stem] = mm_energy
+        
+        #     save_to_yaml(mm_energies_dict, output_dir/f"fragment_sugar_epsilon_zeta/mm_energy.yaml")
+        #     save_to_yaml(dihedrals, output_dir/f"fragment_sugar_epsilon_zeta/dihedrals.yaml")
+        # else:
+        #     with open(output_dir/f"fragment_sugar_epsilon_zeta/mm_energy.yaml", "r") as f:
+        #         mm_energies_dict = yaml.safe_load(f)
+        #     for conf in self.all_conformer_files:
+        #         mm_energies.append(mm_energies_dict[conf.stem])
+        #         conf_names.append(conf.stem)
+        #         conf_mol = rd_load_file(str(conf))
+        #         # unit from RDkit is Angstrom, convert to nm by dividing 10.
+        #         positions = np.array(conf_mol.GetConformer().GetPositions()) / 10.
+                
+        #         parm_mol.positions = positions            
+        #         mm_restraints = []
+        #         dihedral_each_conf = {}
+
+        #         dihedral_degree_epsilon = float(parm_mol.dihedrals[self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["epsilon"])[0]].measure())
+        #         dihedral_degree_zeta = float(parm_mol.dihedrals[self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["zeta"])[0]].measure())
+        #         dihedral_degree_sugar = float(parm_mol.dihedrals[self.get_dihrdeal_terms_by_quartet(parm_mol, self.valid_fragment["sugar-occo"])[0]].measure())
+        #         dihedral_each_conf["epsilon"] = dihedral_degree_epsilon / 180.0 * np.pi
+        #         dihedral_each_conf["zeta"] = dihedral_degree_zeta / 180.0 * np.pi
+        #         dihedral_each_conf["sugar"] = dihedral_degree_sugar / 180.0 * np.pi
+        #         dihedrals[conf.stem] = dihedral_each_conf
+        #     save_to_yaml(dihedrals, output_dir/f"fragment_sugar_epsilon_zeta/dihedrals.yaml")
         

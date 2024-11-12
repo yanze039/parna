@@ -296,15 +296,15 @@ class MoleculeFactory:
             
         if optimize:
             logger.info("Minimizing the structure...")
-            if restraints is not None:
-                for force in system.getForces():
-                    if force.getForceGroup() == 1:
-                        for di in range(force.getNumTorsions()):
-                            atom1, atom2, atom3, atom4, periodicity, phase, k = force.getTorsionParameters(di)
-                            new_k = force_constant*unit.kilojoules_per_mole
-                            force.setTorsionParameters(di, atom1, atom2, atom3, atom4, periodicity, phase, new_k)
-                            simulation.context.reinitialize(preserveState=True)
-                            force.updateParametersInContext(simulation.context)
+            # if restraints is not None:
+            #     for force in system.getForces():
+            #         if force.getForceGroup() == 1:
+            #             for di in range(force.getNumTorsions()):
+            #                 atom1, atom2, atom3, atom4, periodicity, phase, k = force.getTorsionParameters(di)
+            #                 new_k = force_constant*unit.kilojoules_per_mole
+            #                 force.setTorsionParameters(di, atom1, atom2, atom3, atom4, periodicity, phase, new_k)
+            #                 simulation.context.reinitialize(preserveState=True)
+            #                 force.updateParametersInContext(simulation.context)
             if sampling:
                 simulation.step(2000)
             simulation.minimizeEnergy()
@@ -364,8 +364,10 @@ class MoleculeFactory:
                             f" {str(output_dir)}" \
                             f" --charge {charge}" \
                             f" --n_threads {self.threads}" \
-                            f" --method_basis {self.method}/{self.basis}" \
+                            f" --method {self.method}" \
+                            f" --basis {self.basis}" \
                             f" --aqueous" \
+                            " --convert2molden" \
                             f"\n"
         with open(slurm_filename, "w") as f:
             f.write(slurm_content)
@@ -588,3 +590,34 @@ def modify_torsion_parameters(pmd_mol, dih_parm, resid=None):
             )
             
     return pmd_mol
+
+
+def find_all_paths_between_two_atoms(mol,
+                                     start_atom_idx, 
+                                     end_atom_idx):
+    r"""Find all paths between two atoms in a molecule.
+    We use the DFS algorithm to find all paths between two atoms.
+    """
+    all_path=[]
+    N_atoms = mol.GetNumAtoms()
+    visited = [False] * N_atoms
+    def dfs(current_idx, path, all_path):
+        path.append(current_idx)
+        
+        if current_idx == end_atom_idx:
+            all_path.append(path.copy())
+            return
+        
+        visited[current_idx] = True
+        current_atom = mol.GetAtomWithIdx(current_idx)
+        
+        for neighbor in current_atom.GetNeighbors():
+            neighbor_atom_idx = neighbor.GetIdx()
+            if not visited[neighbor_atom_idx]:
+                dfs(neighbor_atom_idx, path, all_path)
+                path.pop()
+        visited[current_idx] = False
+    
+    dfs(start_atom_idx, [], all_path)
+    
+    return all_path

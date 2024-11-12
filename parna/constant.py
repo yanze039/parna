@@ -4,6 +4,15 @@ Hatree2kCalPerMol = 627.509474
 kJ2kCal = 0.239005736
 kCal2kJ = 4.184
 
+ATOMIC_NUMBERS = {
+    "H": 1,
+    "C": 6,
+    "N": 7,
+    "O": 8,
+    "F": 9,
+    "P": 15,
+    "Cl": 17
+}
 
 sugar_angle_v3 = {
     "C3'-endo": -35.70,

@@ -7,6 +7,7 @@ import parmed as pmd
 import numpy as np
 import yaml
 import random
+from parna.constant import ATOMIC_NUMBERS
 
 SLURM_HEADER_CPU = """#!/bin/bash
 source /etc/profile
@@ -14,7 +15,7 @@ module load anaconda/2023a
 source activate mdtools
 source $HOME/env/multiwfn.env
 source $HOME/env/xtb.env
-source $HOME/env/orca.env
+source $HOME/env/orca6.env
 \n
 """
 
@@ -180,7 +181,7 @@ def split_xyz_file(input_file_path, output_folder, every_frame=1, output_prefix=
         conformer_data = lines[start_index:end_index]
 
         # Generate the output file path for the current conformer
-        output_file_path = f"{output_folder}/{output_prefix}_{conformer_index}.xyz"
+        output_file_path = f"{output_folder}/{output_prefix}_{conformer_index:06d}.xyz"
 
         # Write the conformer data to the individual XYZ file
         with open(output_file_path, 'w') as individual_xyz_file:
@@ -236,3 +237,87 @@ def get_suger_picker_angles_from_pseudorotation(phase, intensity, phase_fmt="deg
 def save_to_yaml(dict_data, yaml_file):
     with open(yaml_file, "w") as f:
         yaml.dump(dict_data, f)
+        
+
+def parse_xyz_file(xyz_file):
+    with open(xyz_file, "r") as fp:
+        n_atom = int(fp.readline().strip())
+        comment = str(fp.readline())
+        coords = []
+        elements = []
+        for i in range(n_atom):
+            element, x, y, z = fp.readline().strip().split()
+            elements.append(ATOMIC_NUMBERS[element])
+            coords.append([float(x),float(y),float(z)])
+    
+    data = {
+        "coord": np.array(coords).reshape(1, n_atom, 3),
+        "numbers": np.array(elements).reshape(1, n_atom),
+        # "charge": np.array([-1,]).reshape(1,),
+        # "mult": np.array([1,])
+    }
+            
+    return data
+
+
+def dispatch_commands_to_jobs(commands, n_jobs=1, 
+                              job_prefix="job", 
+                              output_dir=".",
+                              work_dir=".",
+                              submit=False,
+                              submit_options="-s 48"):
+    """
+    Dispatch a list of commands to multiple jobs.
+
+    Parameters:
+    - commands (list): List of commands to be dispatched.
+    - n_jobs (int): Number of jobs to dispatch the commands to.
+    - job_prefix (str): Prefix of the job script files.
+    - output_dir (str): Directory to save the job script files.
+    - submit (bool): Whether to submit the jobs to the job
+    
+    Returns:
+    - None
+    """
+    if len(commands) == 0:
+        raise ValueError("The list of commands is empty.")
+    if n_jobs < 1:
+        raise ValueError("The number of jobs must be greater than 0.")
+    
+    if len(commands) < n_jobs:
+        n_jobs = len(commands)
+    
+    # Calculate the number of commands per job
+    n_commands_each_job = np.ones(n_jobs, dtype=int) * len(commands) // n_jobs
+    n_remaining_commands = len(commands) % n_jobs
+    n_commands_each_job[:n_remaining_commands] += 1
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(exist_ok=True)
+    work_dir = Path(work_dir).resolve()
+    # Dispatch the commands to jobs
+    for i in range(n_jobs):
+        # Calculate the start and end indices of the commands for the current job
+        if i == 0:
+            start_index = 0
+        else:
+            start_index = sum(n_commands_each_job[:i])
+        end_index = start_index + n_commands_each_job[i]
+
+        # Extract the commands for the current job
+        job_commands = commands[start_index:end_index]
+
+        # Create a temporary script file for the current job
+        script_file_path = output_dir / f"{job_prefix}_{i}.sh"
+        with open(script_file_path, 'w') as script_file:
+            script_file.write(SLURM_HEADER_CPU)
+            script_file.write("\n")
+            script_file.write(f"cd {work_dir}\n")
+            script_file.write("\n".join(job_commands))
+            script_file.write("\n")
+
+    # Dispatch the script file to the job scheduler
+    if submit:
+        os.chdir(output_dir)
+        for i in range(n_jobs):
+            script_file_path = f"{job_prefix}_{i}.sh"
+            os.system(f"LLsub {script_file_path} {submit_options}")

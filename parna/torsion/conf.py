@@ -3,12 +3,22 @@ from typing import List, Tuple
 import os
 from pathlib import Path
 import shutil
-from parna.qm.xtb import XTB
+from parna.qm.xtb_utils import XTB as EngineXTB
+from parna.qm.orca_utils import EngineORCA
 from parna.utils import split_xyz_file
 from parna.logger import getLogger
 import rdkit.Chem as Chem
 import numpy as np
-
+from ase import Atoms
+from ase.constraints import FixInternals
+from ase.optimize import BFGS
+from ase.calculators.calculator import Calculator, all_properties
+from ase.io import read, write
+# ase.io.xyz.write_xyz
+from ase.io.xyz import write_xyz
+import openmm as mm
+import openmm.app as app
+import openmm.unit as unit
 
 logger = getLogger(__name__)
 
@@ -36,7 +46,7 @@ class DihedralScanner:
         if engine == "xtb":
             if not shutil.which("xtb"):
                 raise FileNotFoundError("xtb is not found in the PATH. Please install xtb and add it to the PATH.")
-            self.engine = XTB(force_constant=force_constant)
+            self.engine = EngineXTB(force_constant=force_constant)
         else:
             raise ValueError("Unsupported engine")
         self.conformers = {}
@@ -215,15 +225,25 @@ class ConformerOptimizer:
                 warming_constraints=True
         ):
         self.input_file = Path(input_file)
+        
+        if self.input_file.suffix == ".pdb":
+            rdmol = Chem.MolFromPDBFile(str(self.input_file), removeHs=False)
+            Chem.MolToXYZFile(rdmol, str(self.input_file.with_suffix(".conformer_opt.xyz")))
+            self.input_file = self.input_file.with_suffix(".conformer_opt.xyz")
+        
         self.engine = engine
         self.charge = charge
-        self.workdir = Path(workdir)
+        self.workdir = Path(workdir).resolve()
         if not os.path.exists(self.workdir):
             os.makedirs(self.workdir)
-        if engine == "xtb":
+        if engine.lower() == "xtb":
             if not shutil.which("xtb"):
                 raise FileNotFoundError("xtb is not found in the PATH. Please install xtb and add it to the PATH.")
-            self.engine = XTB(force_constant=force_constant)
+            self.engine_name = "xtb"
+            self.engine = EngineXTB(force_constant=force_constant)
+        elif engine.lower() == "orca":
+            self.engine = EngineORCA()
+            self.engine_name = "orca"
         else:
             raise ValueError("Unsupported engine")
         self.conformers = {}
@@ -258,44 +278,160 @@ class ConformerOptimizer:
         """
         self.engine.clear()
         self.conformers = {}
+    
+    def set_sampling(self):
+        self.engine.set_sampling()
 
-    def run(self):
+    def run_xtb(self, overwrite=True, clean_tmp=True, sampling=True):
         """
         Scan the dihedral angle on a grid.
         concurrent_constraints: a list of constraints for each grid point.
         """
+        assert self.engine_name == "xtb"
+        self.output_file = self.workdir/f"{self.conformer_prefix}_opt.xyz"
+        if not overwrite and os.path.exists(self.workdir/f"{self.conformer_prefix}_opt.xyz"):
+            logger.info("Conformer already exists. Skipping the optimization.")
+            return
+        
+        tmp_workdir = self.workdir/f"xtb_tmp_{self.conformer_prefix}"
+        # if not os.path.exists(tmp_workdir):
+        tmp_workdir.mkdir(exist_ok=True)
+        
+        if self.warming_constraints:
+            self.clear_constraints()
+            if self.constraints is not None and len(self.constraints) > 0:
+                for c in self.constraints:
+                    self.add_constraint(c[0], c[1], foece_constant=self.force_constant/20.)
+            self.engine.run(
+                coord=str(self.input_file),
+                charge=self.charge,
+                workdir=tmp_workdir,
+                inp_name=f"{self.conformer_prefix}.opt1.inp",
+                solution=None,
+                sampling=sampling,
+                opt=False,
+                gfnff=True,
+            )
+            output_traj = tmp_workdir/f"xtb.trj"
+            split_xyz_file(input_file_path=output_traj, 
+                           output_folder=tmp_workdir, 
+                           every_frame=1,
+                           output_prefix=self.conformer_prefix+"_sampled")
+            traj_list = sorted(list(tmp_workdir.glob(f"{self.conformer_prefix}_sampled_*.xyz")))
+            if len(traj_list) < 2:
+                raise ValueError("Sampling failed.")
+            last_xyz_file = traj_list[-1]
+            shutil.copy(last_xyz_file, tmp_workdir/f"xtbopt.tmp{self.input_file.suffix}")
+            for traj_frame in traj_list:
+                os.remove(traj_frame)
+            # os.remove(tmp_workdir/f"xtbrestart")
+            os.remove(tmp_workdir/f"mdrestart")
+            os.remove(tmp_workdir/f"xtbmdok")
+            os.remove(tmp_workdir/f"xtb.trj")
+            
         self.clear_constraints()
         if self.constraints is not None and len(self.constraints) > 0:
             for c in self.constraints:
-                self.add_constraint(c[0], c[1], foece_constant=self.force_constant/20.)
-        self.engine.run(
-            coord=str(self.input_file),
-            charge=self.charge,
-            workdir=self.workdir,
-            inp_name="xtb_opt.inp"
-        )
+                self.add_constraint(c[0], c[1], foece_constant=self.force_constant/5.)
+        if not self.warming_constraints:
+            tmp_file = self.input_file
+        else:
+            tmp_file = tmp_workdir/f"xtbopt.tmp{self.input_file.suffix}"
+        if sampling:
+            self.engine.run(
+                coord=str(tmp_file),
+                charge=self.charge,
+                workdir=tmp_workdir,
+                inp_name=f"{self.conformer_prefix}.md.inp",
+                opt=False,
+                sampling=sampling,
+                solution=None
+            )
+            output_traj = tmp_workdir/f"xtb.trj"
+            split_xyz_file(input_file_path=output_traj, 
+                           output_folder=tmp_workdir, 
+                           every_frame=1,
+                           output_prefix=self.conformer_prefix+"_sampled")
+            traj_list = sorted(list(tmp_workdir.glob(f"{self.conformer_prefix}_sampled_*.xyz")))
+            # read energy in xyz file 
+            energies = []
+            for traj_frame in traj_list:
+                with open(traj_frame, "r") as f:
+                    lines = f.readlines()
+                    energies.append(float(lines[1].strip().split()[1]))
+            min_energy_idx = np.argmin(energies)
+            if len(traj_list) < 2:
+                raise ValueError("Sampling failed.")
+            logger.info(f"Minimum energy frame: {traj_list[min_energy_idx]}")
+            last_xyz_file = traj_list[min_energy_idx]
+            # last_xyz_file = traj_list[-1]
+            tmp_file = last_xyz_file
         self.clear_constraints()
         if self.constraints is not None and len(self.constraints) > 0:
             for c in self.constraints:
                 self.add_constraint(c[0], c[1], foece_constant=self.force_constant)
-        
-        shutil.copy(self.workdir/f"xtbopt{self.input_file.suffix}", self.workdir/f"xtbopt.tmp{self.input_file.suffix}")
         self.engine.run(
-            coord=str(self.workdir/f"xtbopt.tmp{self.input_file.suffix}"),
+            coord=str(tmp_file),
             charge=self.charge,
-            workdir=self.workdir,
-            inp_name="xtb_scan.inp"
+            workdir=tmp_workdir,
+            inp_name=f"{self.conformer_prefix}.opt2.inp",
+            opt=True,
+            sampling=False
         )
         if self.input_file.suffix == ".xyz":
-            os.rename(self.workdir/"xtbopt.xyz", self.workdir/f"{self.conformer_prefix}_opt.xyz")
+            os.rename(tmp_workdir/"xtbopt.xyz", self.workdir/f"{self.conformer_prefix}_opt.xyz")
         elif self.input_file.suffix == ".pdb":
-            tmp_mol = Chem.MolFromPDBFile(str(self.workdir/"xtbopt.pdb"), removeHs=False)
+            tmp_mol = Chem.MolFromPDBFile(str(tmp_workdir/"xtbopt.pdb"), removeHs=False)
             Chem.MolToXYZFile(tmp_mol, str(self.workdir/f"{self.conformer_prefix}_opt.xyz"))
-            os.remove(self.workdir/f"xtbopt{self.input_file.suffix}")
-        os.remove(self.workdir/f"xtbopt.tmp{self.input_file.suffix}")
+        if clean_tmp:
+            if os.path.exists(tmp_workdir/f"xtbopt{self.input_file.suffix}"):
+                os.remove(tmp_workdir/f"xtbopt{self.input_file.suffix}")
+            if self.warming_constraints:
+                os.remove(tmp_workdir/f"xtbopt.tmp{self.input_file.suffix}")
+            if os.path.exists(tmp_workdir):
+                shutil.rmtree(tmp_workdir)
+        
+        
+    def run_orca(self, basis="", method="XTB2", convergence="normal", solvent="water", n_proc=1, overwrite=True, clean_tmp=True):
+        self.output_file = self.workdir/f"{self.conformer_prefix}_opt.xyz"
+        if not overwrite and os.path.exists(self.workdir/f"{self.conformer_prefix}_opt.xyz"):
+            logger.info("Conformer already exists. Skipping the optimization.")
+            return
+        scrach_dir = self.workdir/f"orca_tmp_{self.conformer_prefix}"
+        scrach_dir.mkdir(exist_ok=True)
+        self.engine.write_input(
+            basis,
+            method,
+            str(self.input_file),
+            opt=True,
+            solvent=solvent,
+            n_proc=n_proc,
+            charge=self.charge,
+            orca_input_file=str(scrach_dir/f"{self.conformer_prefix}.inp"),
+            constraints=self.constraints,
+            convergence=convergence
+        )
+        exit_code = self.engine.run(str(scrach_dir/f"{self.conformer_prefix}.inp"), job_path=scrach_dir)
+        
+        if exit_code != 0:
+            logger.error(f"ORCA calculation failed for {self.input_file}")
+            raise RuntimeError(f"ORCA calculation failed for {self.input_file}")
+        
+        shutil.copy(scrach_dir/f"{self.conformer_prefix}.xyz", self.output_file)
+        # exit(0)
+        if clean_tmp:
+            shutil.rmtree(scrach_dir)
+    
+    def run(self, method=None, basis=None, convergence="normal", 
+            solvent=None, n_proc=1, overwrite=True, clean_tmp=True, sampling=False):
+        if self.engine_name == "xtb":
+            self.run_xtb(overwrite=overwrite, clean_tmp=clean_tmp, sampling=sampling)
+        elif self.engine_name == "orca":
+            self.run_orca(basis, method, convergence=convergence, solvent=solvent, n_proc=n_proc, overwrite=overwrite, clean_tmp=clean_tmp)
+        else:
+            raise ValueError("Unsupported engine")
     
         
-
 class ConformerOptimizerCMAP:
     def __init__(
                 self, 
@@ -317,7 +453,7 @@ class ConformerOptimizerCMAP:
         if engine == "xtb":
             if not shutil.which("xtb"):
                 raise FileNotFoundError("xtb is not found in the PATH. Please install xtb and add it to the PATH.")
-            self.engine = XTB(force_constant=force_constant)
+            self.engine = EngineXTB(force_constant=force_constant)
         else:
             raise ValueError("Unsupported engine")
         self.conformers = {}
@@ -407,5 +543,48 @@ class ConformerOptimizerCMAP:
         return self.constraints + new_constraints
     
         
+class OpenMMCalculator(Calculator):
+    implemented_properties = ['energy', 'forces']
+
+    def __init__(self, parm_mol, device="CUDA", properties={}):
+        super().__init__()
+        temperature = 300.
+        system = parm_mol.createSystem(
+                nonbondedMethod=app.NoCutoff, constraints=app.HBonds,
+                implicitSolvent=app.HCT) # corresponding to igb=1 in Amber)
+        for f in system.getForces():
+            f.setForceGroup(0)
+        integrator = mm.LangevinIntegrator(temperature*unit.kelvin, 1/unit.picosecond, 1.0*unit.femtosecond)
+        integrator.setRandomNumberSeed(1106)
+        minimization_platform = mm.Platform.getPlatformByName(device)
+        simulation = app.Simulation(parm_mol.topology, system, integrator, minimization_platform, properties)
+        self.context = simulation.context
     
- 
+    def calculate(self, atoms, properties=all_properties, system_changes=all_properties):
+        super().calculate(atoms, properties, system_changes)
+        positions = atoms.get_positions() * unit.angstrom  # Convert positions to OpenMM units        
+        self.context.setPositions(positions)
+        state = self.context.getState(getEnergy=True, getForces=True, groups={0})
+
+        energy = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole) / 96.485
+        forces = state.getForces(asNumpy=True).value_in_unit(unit.kilojoule_per_mole/unit.angstrom) / 96.485
+
+        self.results['energy'] = energy
+        self.results['forces'] = np.array(forces)
+
+
+def calculate_relaxed_energy(atoms, calculator, fmax=0.01, epsilon=1e-5, steps=10000, logfile="-", dihedral_constraints=None, save=None):
+    # atoms = read(coords_files)
+    atoms.calc = calculator
+    
+    if dihedral_constraints is not None:
+        c = FixInternals(dihedrals_deg=dihedral_constraints, epsilon=epsilon)
+        atoms.set_constraint(c)
+    dyn = BFGS(atoms, logfile=logfile)
+    dyn.run(fmax=fmax, steps=steps)
+    # Save in XYZ format
+    if save is not None:
+        with open(save, "w") as f:
+            write_xyz(f, [atoms])
+    return atoms.get_potential_energy()
+    

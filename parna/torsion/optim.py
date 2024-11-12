@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from parna.logger import getLogger
 import random
+from pathlib import Path
 
 
 logger = getLogger(__name__)
@@ -144,3 +145,94 @@ class TorsionOptimizer(nn.Module):
                 "phase": self.phase.reshape(self.n_dihedrals, self.order).detach().numpy().tolist()
             }
 
+
+def shift_angle_periodicity(angle):
+    """Shift angle to the range of [0, 2*pi]"""
+    return (angle + np.pi) % (2 * np.pi) - np.pi
+
+
+def get_idx(angle, base_value=-180., inverval=15., atol=0.08    ):
+    angle_idx = (angle - base_value) / inverval
+    angle_coeff = {}
+    if np.isclose(angle_idx, int(angle_idx), atol=atol):
+        angle_coeff[int(angle_idx)] = 1.
+    elif np.isclose(angle_idx, int(angle_idx)+1, atol=atol):
+        angle_coeff[int(angle_idx)+1] = 1.
+    else:
+        angle_coeff[int(angle_idx)+1] = angle_idx - int(angle_idx)
+        angle_coeff[int(angle_idx)] = 1 - angle_coeff[int(angle_idx)+1]
+    return angle_coeff
+    
+
+def get_idx_from_angle(sugar, epsilon, zeta, fmt="drgree"):
+    if fmt == "rad":
+        sugar = np.rad2deg(sugar)
+        epsilon = np.rad2deg(epsilon)
+        zeta = np.rad2deg(zeta)
+    
+    # print(sugar, epsilon, zeta)
+    epsilon_coeff = get_idx(epsilon, base_value=-180., inverval=15.)
+    zeta_coeff = get_idx(zeta, base_value=-180., inverval=15.)
+    
+    all_coeff = {}
+    for epi, ec in epsilon_coeff.items():
+        for zetai, zc in zeta_coeff.items():
+            all_coeff[(epi%24)*24+(zetai%24)] = ec * zc
+
+    sugar_coeff = get_idx(sugar, base_value=-60., inverval=15.)
+    for sugari, sc in sugar_coeff.items():
+        for epi, ec in epsilon_coeff.items():
+            if epi == 24: epi = 0
+            if sugari == 24: sugari = 0
+            assert epi < 24, f"epi: {epi} sugari: {sugari}, sugar: {sugar}, epsilon: {epsilon}, zeta: {zeta}"
+            assert sugari < 24, f"epi: {epi} sugari: {sugari}, sugar: {sugar}, epsilon: {epsilon}, zeta: {zeta}"
+            all_coeff[(sugari%24)*24+(epi%24)+24*24] = ec * sc
+    return all_coeff
+
+
+class LinearCMAPSolver:
+    def __init__(self, n_param, ):     
+        self.n_param = n_param
+    
+    def fit(self, all_energy_info, output_dir):
+        n_keys = len(list(all_energy_info.keys()))
+        assert n_keys >= self.n_param
+        coeff_matrix = np.zeros((n_keys,self.n_param))
+
+        nnp_energy_vector = np.zeros(n_keys)
+        mm_energy_vector = np.zeros(n_keys)
+        for i, conf in enumerate(list(all_energy_info.keys())):
+            info = all_energy_info[conf]
+            dihedral_angle = info["dihedral"]
+            all_coeff = get_idx_from_angle(shift_angle_periodicity(dihedral_angle["sugar"]), 
+                                           shift_angle_periodicity(dihedral_angle["epsilon"]), 
+                                           shift_angle_periodicity(dihedral_angle["zeta"]),
+                                           fmt="rad")
+            for coeff_i, coeff in all_coeff.items():
+                coeff_matrix[i,coeff_i] = coeff
+            nnp_energy_vector[i] = info["qm_energy"]
+            mm_energy_vector[i] = info["mm_energy"]
+        
+        nnp_energy_vector = nnp_energy_vector - nnp_energy_vector.min()
+        mm_energy_vector = mm_energy_vector - mm_energy_vector.min()
+        cmap_energy = nnp_energy_vector - mm_energy_vector
+        x, residuals, rank, s = np.linalg.lstsq(coeff_matrix, cmap_energy, rcond=None)
+        epsilon_zeta = x[:24*24].reshape(24,24)
+        sugar_epsilon = x[24*24:].reshape(-1, 24)
+        head_patch = np.zeros((8,24))
+        tail_patch = np.zeros((7,24))
+
+        for i in range(8):
+            head_patch[7-i] = sugar_epsilon[0] * np.exp(-(i+1)/2)
+
+        for i in range(7):
+            tail_patch[i] = sugar_epsilon[-1] * np.exp(-(i+1)/2)
+
+        sugar_epsilon_cmap = np.concatenate([head_patch, sugar_epsilon, tail_patch])
+        epsilon_zeta_cmap = epsilon_zeta
+        output_dir = Path(output_dir)
+        np.save(output_dir / "sugar_epsilon_cmap.npy", sugar_epsilon_cmap)
+        np.save(output_dir / "epsilon_zeta_cmap.npy", epsilon_zeta_cmap)
+
+        
+   
