@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 from parna.logger import getLogger
 import argparse
+import json
 
 logger = getLogger(__name__)
 
@@ -17,29 +18,56 @@ class EngineORCA(object):
             method,
             xyz_file,
             solvent=None,
+            opt=False,
             n_proc=1,
             charge=0,
-            orca_input_file="mol.inp"
+            orca_input_file="mol.inp",
+            constraints=None,
+            convergence="normal"
     ):
         content = ["!MiniPrint"]
         content.append(f"!{basis} {method}")
+        if opt:
+            content.append("!OPT")
         if solvent is not None:
-            content.append(f"!CPCM({solvent})")
+            if "xtb" in method.lower():
+                content.append(f"!DDCOSMO({solvent})")
+            else:
+                content.append(f"!CPCM({solvent})")
+            
         content.append(f"%PAL NPROCS {n_proc} END")
+        content.append("%Method")
+        content.append("WriteJSONPropertyfile True")
+        content.append("End")
+        
+        if constraints is not None:
+            content.append(r"%geom")
+            content.append("Constraints")
+            for constraint in constraints:
+                dihedral_indices = " ".join(map(str, constraint[0]))
+                values = (float(constraint[1]) + 360) % 360
+                content.append(f"{{ D {dihedral_indices} {values} C }}")
+            content.append("end")
+            content.append(f"Convergence {convergence}")
+            content.append("end")
+        
         assert Path(xyz_file).suffix == ".xyz"
         content.append(f"* xyzfile {charge} 1 {xyz_file}")
         logger.info("\n".join(content))
+        
         with open(orca_input_file, "w") as f:
             f.write("\n".join(content))
             f.write("\n")  # an extra blank line avoid error of ORCA
         logger.info(f"orca input file is written to {orca_input_file}")
 
-
     def run(self, input_file, job_path = None):
         cwd = os.getcwd()
         if job_path is not None:
             os.chdir(job_path)
-        code = os.system(f"{self.orca_full_path} {input_file} --oversubscribe")
+        code = os.system(f"{self.orca_full_path} {input_file} --oversubscribe > {input_file}.orca.log")
+        if code != 0:
+            logger.error(f"ORCA calculation failed for {input_file}")
+            raise RuntimeError(f"ORCA calculation failed for {input_file}")
         os.chdir(cwd)
         return code
     
@@ -97,7 +125,7 @@ def calculate_energy_orca(
 
 
 
-def read_energy_from_txt(log_file: str, source='orca') -> float:
+def read_energy_from_txt(log_file: str, source='orca', fmt="json") -> float:
     if source == 'psi4':
         with open(log_file, 'r') as f:
             lines = f.readlines()
@@ -107,13 +135,20 @@ def read_energy_from_txt(log_file: str, source='orca') -> float:
                 return energy
         return None
     elif source == 'orca':
-        with open(log_file, 'r') as f:
-            lines = f.readlines()
-        for line in lines:
-            if "SCF Energy:" in line:
-                energy = float(line.split()[-1])
-                return energy
-        return None
+        if fmt == "txt":
+            with open(log_file, 'r') as f:
+                lines = f.readlines()
+            for line in lines:
+                if "SCF Energy:" in line:
+                    energy = float(line.split()[-1])
+                    return energy
+            return None
+        elif fmt == "json":
+            with open(log_file, 'r') as f:
+                data = json.load(f)
+            energy = float(data["Geometry_1"]['SCF_Energy']["SCF_ENERGY"])
+            return energy
+
 
 
 if __name__ == "__main__":
