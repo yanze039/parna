@@ -37,7 +37,9 @@ def write_xtb_input(dihedral_atoms, dihedral_angles, scan_atoms, scan_type="dihe
     return "\n".join(contents)
 
 
-def xtb(coord, inp=None, charge=0, workdir=".", solution="h2o", opt=True, opt_type=""):
+def xtb(coord, inp=None, charge=0, workdir=".", solution="h2o", 
+        sampling=False, gfnff=False,
+        opt=True, opt_type=""):
     workdir = Path(workdir)
     coord = Path(coord)
     
@@ -51,9 +53,16 @@ def xtb(coord, inp=None, charge=0, workdir=".", solution="h2o", opt=True, opt_ty
     if opt:
         xtbcommand.append("--opt")
         xtbcommand.append(opt_type)
+    if sampling:
+        if gfnff:
+            xtbcommand.append("--omd")
+        else:
+            xtbcommand.append("--md")
     if solution is not None:
         xtbcommand.append("--gbsa")
         xtbcommand.append(solution)
+    if gfnff:
+        xtbcommand.append("--gfnff")
     logger.info("Running xtb...")
     if not workdir.exists():
         workdir.mkdir(exist_ok=True)
@@ -121,6 +130,7 @@ class XTB:
         self.scan = False
         self.force_constant = force_constant
         self.scan_list = []
+        self.sampling = False
     
     def clear(self):
         self.constraint = False
@@ -164,10 +174,31 @@ class XTB:
             ))
         return "\n".join(contents)
     
+    def set_sampling(self, time=1.5, temp=300, step=4.0, shake=2):
+        contents = ["$md"]
+        contents.append(f"temp={temp}")
+        contents.append(f"time={time}")
+        contents.append("dump=100.0")
+        contents.append(f"step={step}")
+        contents.append("velo=false")
+        contents.append("nvt=true")
+        contents.append("hmass=4")
+        contents.append(f"shake={shake:d}")
+        contents.append("sccacc=2.0")
+        contents.append("$end")
+        self.sampling_list = contents
+    
     def generate_input(self):
         contents = []
         if self.constraint:
             contents.append(self.write_constraint())
+        if self.sampling:
+            self.sampling_list = []
+            if self.gfnff:
+                self.set_sampling(time=3, temp=298, step=2.0, shake=0)
+            else:
+                self.set_sampling(temp=298, time=1.0)
+            contents.append("\n".join(self.sampling_list))
         if self.scan:
             contents.append(self.write_scan())
         contents.append("$end")
@@ -177,17 +208,34 @@ class XTB:
         with open(filename, "w") as f:
             f.write(self.generate_input())
     
-    def run(self, coord: str, charge: int, workdir, opt=True, inp_name:str="xtb.inp"):
+    def run(self, coord: str, charge: int, workdir, opt=True, 
+            sampling=False,
+            solution="h2o",
+            gfnff=False,
+            inp_name:str="xtb.inp"):
         workdir = Path(workdir)
         coord = Path(coord)
         inp = workdir/inp_name
+        if sampling==True:
+            self.sampling = True
+        else:
+            self.sampling = False
+        
+        if gfnff:
+            self.gfnff = True
+        else:
+            self.gfnff = False
+        
         self.write_input(inp)
         xtb(
             coord=coord,
             inp=inp,
             charge=charge,
             workdir=workdir,
-            opt=opt
+            opt=opt,
+            solution=solution,
+            sampling=sampling,
+            gfnff=gfnff
         )
         return workdir/"xtb.out"
     

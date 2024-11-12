@@ -21,7 +21,6 @@ class EngineORCA(object):
             opt=False,
             n_proc=1,
             charge=0,
-            engrad=True,
             orca_input_file="mol.inp",
             constraints=None
     ):
@@ -29,8 +28,6 @@ class EngineORCA(object):
         content.append(f"!{basis} {method}")
         if opt:
             content.append("!OPT")
-        if engrad:
-            content.append("!ENGRAD")
         if solvent is not None:
             if "xtb" in method.lower():
                 content.append(f"!DDCOSMO({solvent})")
@@ -93,8 +90,7 @@ def calculate_energy_orca(
         aqueous=False,
         opt=False,
         convert2molden=True,
-        constraints=None,
-        engrad=True
+        constraints=None
     ):
     logger.info(f"calculating {method}/{basis} energy for " + str(input_file))
     output_dir = Path(output_dir)
@@ -116,8 +112,7 @@ def calculate_energy_orca(
         orca_input_file=str(orca_input.resolve()),
         solvent=solvent,
         opt=opt,
-        constraints=constraints,
-        engrad=engrad
+        constraints=constraints
     )
     code = orca.run(str(orca_input.resolve()), job_path=output_dir)
     if code != 0:
@@ -131,6 +126,10 @@ def calculate_energy_orca(
         )
     return code
 
+import sys
+sys.path.append("/home/gridsan/ywang3/Project/Capping/parna")
+
+from parna.torsion.conf import ConformerOptimizer
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -138,32 +137,58 @@ if __name__ == "__main__":
     parser.add_argument("output_dir", type=str)
     parser.add_argument("--charge", type=int, default=0)
     parser.add_argument("--n_threads", type=int, default=48)
-    parser.add_argument("--method", type=str, default="HF")
-    parser.add_argument("--basis", type=str, default="6-31G*")
-    parser.add_argument("--opt", action="store_true", default=False)
-    parser.add_argument("--convert2molden", action="store_true", default=False)
-    parser.add_argument("--aqueous", action="store_true")
     parser.add_argument("--constraint-file", type=str, default=None)
-    # parser.add_argument()
+    parser.add_argument("--prefix", type=str, default="conf")
     args = parser.parse_args()
     logger.info(f"Calculating energy by {__file__}")
- 
+     
     if args.constraint_file is not None:
         with open(args.constraint_file, "rb") as f:
             constraints = pickle.load(f)
     else:
         constraints = None
-
-    calculate_energy_orca(
-        args.input_file,
-        args.output_dir,
-        charge=args.charge,
-        n_threads=args.n_threads,
-        method=args.method,
-        basis=args.basis,
-        aqueous=args.aqueous,
-        opt=args.opt,
-        convert2molden=args.convert2molden,
-        constraints=constraints,
-        engrad=True
+    
+    logger.info(f"Generating data for {args.input_file}")
+    copt = ConformerOptimizer(
+            input_file=str(args.input_file), 
+            engine="xtb",
+            charge=args.charge,
+            workdir=str(args.output_dir),
+            conformer_prefix=args.prefix+"_tmp",
+            constraints=constraints,
+            force_constant=0.5,
+            warming_constraints=True
     )
+    copt.run(solvent="water", n_proc=args.n_threads, overwrite=False)
+    output_dir = Path(args.output_dir)
+    tmp_file = output_dir/f"{args.prefix}_tmp_opt.xyz"
+    
+    try:
+        copt = ConformerOptimizer(
+                    input_file=str(tmp_file), 
+                    engine="orca",
+                    charge=args.charge,
+                    workdir=str(args.output_dir),
+                    conformer_prefix=args.prefix,
+                    constraints=constraints,
+            )
+        copt.run(basis="", method="XTB2", solvent="water", n_proc=args.n_threads, overwrite=False)
+    except Exception as e:
+        logger.error(f"Error in {args.input_file}: {e}")
+        copt = ConformerOptimizer(
+                    input_file=str(tmp_file), 
+                    engine="orca",
+                    charge=args.charge,
+                    workdir=str(args.output_dir),
+                    conformer_prefix=args.prefix,
+                    constraints=constraints,
+            )
+        copt.run(basis="", method="XTB2", solvent="water", 
+                 convergence="loose",
+                 n_proc=args.n_threads, overwrite=False)
+        
+    
+    if os.path.exists(tmp_file):
+        os.remove(tmp_file)
+    
+    
