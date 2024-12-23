@@ -159,7 +159,7 @@ if __name__ == "__main__":
             force_constant=0.5,
             warming_constraints=True
     )
-    copt.run(solvent="water", n_proc=args.n_threads, overwrite=False)
+    copt.run(solvent="water", n_proc=args.n_threads, overwrite=False, sampling=True)
     output_dir = Path(args.output_dir)
     tmp_file = output_dir/f"{args.prefix}_tmp_opt.xyz"
     

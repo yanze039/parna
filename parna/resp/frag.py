@@ -161,7 +161,9 @@ def getEquivalenceConstraints(query):
 
 def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name, 
                      tightness=0.1, wfn_file_type="molden", 
-                     extra_charge_constraints={}, extra_equivalence_constraints=[]):
+                     extra_charge_constraints={}, 
+                     extra_equivalence_constraints=[],
+                     prefix=None):
     """
     
     Example:
@@ -201,11 +203,16 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name,
     Chem.SanitizeMol(query)
 
     charge_constraints = []
+    if extra_charge_constraints is None:
+        extra_charge_constraints = {}
+    if extra_equivalence_constraints is None:
+        extra_equivalence_constraints = []
     for _, constraint in extra_charge_constraints.items():
         charge_constraints.append([constraint["atom_idx"], constraint["value"]])
     
     eq_constraints = getEquivalenceConstraints(query)
     equivalence_constraints_1_file = output_dir/f"{Path(input_file).stem}_equivalence_constraints_stage1.dat"
+    
     with open(equivalence_constraints_1_file, "w") as fp:
         for atom_pair in eq_constraints["Stage1"]:
             atom_string = ",".join([str(x) for x in atom_pair])
@@ -247,36 +254,38 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name,
         if not ( i+1 in all_equivalence_constraints_stage2 ):
             charge_constraints_stage2.append([i+1, charge_dict[i]["charge"]])
     
-    # all heavy atoms except CH2 and CH3
-    charge_constrains_file_2 = output_dir/f"{Path(input_file).stem}_charge_constraints_stage2.dat"
-    with open(charge_constrains_file_2, "w") as fp:
-        for pair in charge_constraints_stage2:
-            fp.write(f"{pair[0]:d} {pair[1]:.6f}\n")
-        
-    # CH2 and CH3
-    equivalence_constraints_2_file = output_dir/f"{Path(input_file).stem}_equivalence_constraints_stage2.dat"
-    with open(equivalence_constraints_2_file, "w") as fp:
-        for atom_list in eq_constraints["Stage2"]:
-            fp.write(f"{','.join([str(a) for a in atom_list])}\n")
-    
-    RESPStage1(
-        fchk=fchk_file.resolve(),
-        conf_list_file=conf_list_txt.resolve(),
-        eqConstraints=equivalence_constraints_2_file.resolve(),
-        chgConstraints=charge_constrains_file_2.resolve(),
-        a=0.001,
-        b=tightness,
-        n_proc=32,
-        log_file=str((output_dir/"multiwfn_stage2.log").resolve()),
-        workdir=output_dir.resolve()
-    )
-    chg_file = output_dir/f"{fchk_file.stem}.stage2.log.chg"
-    os.rename(str((output_dir/"multiwfn_stage2.log").resolve()), chg_file)
-    
-    if ".log." in str(chg_file):
-        charge_dict = read_log_chg(chg_file)
+    if len(eq_constraints["Stage2"]) == 0 and len(charge_constraints_stage2) == query.GetNumAtoms():
+        equivalence_constraints_2_file = None
     else:
-        charge_dict = read_chg(chg_file)
+        # all heavy atoms except CH2 and CH3
+        charge_constrains_file_2 = output_dir/f"{Path(input_file).stem}_charge_constraints_stage2.dat"
+        with open(charge_constrains_file_2, "w") as fp:
+            for pair in charge_constraints_stage2:
+                fp.write(f"{pair[0]:d} {pair[1]:.6f}\n")
+            
+        # CH2 and CH3
+        equivalence_constraints_2_file = output_dir/f"{Path(input_file).stem}_equivalence_constraints_stage2.dat"
+        with open(equivalence_constraints_2_file, "w") as fp:
+            for atom_list in eq_constraints["Stage2"]:
+                fp.write(f"{','.join([str(a) for a in atom_list])}\n")
+        RESPStage1(
+            fchk=fchk_file.resolve(),
+            conf_list_file=conf_list_txt.resolve(),
+            eqConstraints=equivalence_constraints_2_file.resolve(),
+            chgConstraints=charge_constrains_file_2.resolve(),
+            a=0.001,
+            b=tightness,
+            n_proc=32,
+            log_file=str((output_dir/"multiwfn_stage2.log").resolve()),
+            workdir=output_dir.resolve()
+        )
+        chg_file = output_dir/f"{fchk_file.stem}.stage2.log.chg"
+        os.rename(str((output_dir/"multiwfn_stage2.log").resolve()), chg_file)
+    
+        if ".log." in str(chg_file):
+            charge_dict = read_log_chg(chg_file)
+        else:
+            charge_dict = read_chg(chg_file)
 
     total_charge_mol = sum([x["charge"] for x in charge_dict.values()])
     # if input_file is xyz file, convert it to pdb file
@@ -309,7 +318,10 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name,
         assert charge_info["element"] == PeriodicTable.GetElementSymbol(atom.element)
         atom.charge = charge_info["charge"]
         atom.type   = PeriodicTable.GetElementSymbol(atom.element)
-    mol2.save(str(output_dir/f"{Path(input_file).stem}.resp.mol2"), overwrite=True)
+    if prefix is not None:
+        mol2.save(str(output_dir/f"{prefix}.mol2"), overwrite=True)
+    else:
+        mol2.save(str(output_dir/f"{Path(input_file).stem}.resp.mol2"), overwrite=True)
     logger.info("File saved to: " + str(output_dir/f"{Path(input_file).stem}.resp.mol2"))
     logger.info(f"Charge fitting finished for {input_file}")
     os.remove(output_dir/f"{Path(input_file).stem}.tmp.mol2")

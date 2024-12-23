@@ -158,7 +158,7 @@ def getEquivalenceConstraints(query):
 
 def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0.1, 
                 wfn_file_type="molden", wfn_file_prefix="resp_conformer",
-                charge_constrained_groups=["OH5", "OH3"]):
+                charge_constrained_groups=["OH5", "OH3"], prefix=None):
 
     constraint_types = {
         "OH5": {
@@ -312,7 +312,10 @@ def fit_charges(input_file, wfn_directory, output_dir, residue_name, tightness=0
         assert charge_info["element"] == PeriodicTable.GetElementSymbol(atom.element)
         atom.charge = charge_info["charge"]
         atom.type   = PeriodicTable.GetElementSymbol(atom.element)
-    mol2.save(str(output_dir/f"{Path(input_file).stem}.mol2"), overwrite=True)
+    if prefix is not None:
+        mol2.save(str(output_dir/f"{prefix}.mol2"), overwrite=True)
+    else:
+        mol2.save(str(output_dir/f"{Path(input_file).stem}.mol2"), overwrite=True)
     logger.info("File saved to: " + str(output_dir/f"{Path(input_file).stem}.mol2"))
     logger.info(f"Charge fitting finished for {input_file}")
     os.remove(tmp_pdb)

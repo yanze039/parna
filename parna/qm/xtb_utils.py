@@ -39,7 +39,7 @@ def write_xtb_input(dihedral_atoms, dihedral_angles, scan_atoms, scan_type="dihe
 
 def xtb(coord, inp=None, charge=0, workdir=".", solution="h2o", 
         sampling=False, gfnff=False,
-        opt=True, opt_type=""):
+        opt=True, opt_type="", p=None, cycles=None):
     workdir = Path(workdir)
     coord = Path(coord)
     
@@ -58,11 +58,15 @@ def xtb(coord, inp=None, charge=0, workdir=".", solution="h2o",
             xtbcommand.append("--omd")
         else:
             xtbcommand.append("--md")
+    if cycles is not None:
+        xtbcommand.append(f"--cycles {cycles}")
     if solution is not None:
         xtbcommand.append("--gbsa")
         xtbcommand.append(solution)
     if gfnff:
         xtbcommand.append("--gfnff")
+    if p is not None:
+        xtbcommand.append(f"-p {p}")
     logger.info("Running xtb...")
     if not workdir.exists():
         workdir.mkdir(exist_ok=True)
@@ -110,7 +114,7 @@ def gen_multi_conformations(input_file, charge, work_dir, ewin=6, threads=48):
     subprocess.run(
         [
             "crest", 
-            "xtbopt." + input_file.split(".")[-1],
+            "xtbopt." + Path(input_file).suffix[1:],
             "-T", str(threads),
             "-g", "water", "-chrg", str(charge),
             "-ewin", str(ewin), "squick"
