@@ -17,7 +17,7 @@ from parna.logger import getLogger
 from parna.utils import map_atoms, normalize, rd_load_file
 from pathlib import Path
 from parna.parm import parameterize, generate_frcmod
-from parna.resp import RESP_fragment
+from parna.resp import RESP_fragment, generate_atomic_charges
 from parna.utils import atomName_to_index
 from parna.utils import map_atoms, SLURM_HEADER_CPU
 
@@ -165,7 +165,9 @@ class MoleculeFactory:
     def charge_molecule(self, 
                         input_files: Union[str, List[str]],
                         charge, 
-                        output_dir):
+                        output_dir,
+                        scheme="resp2",
+                        prefix=None):
         """
         Calculate RESP charges for a molecule.
         Input:
@@ -173,14 +175,25 @@ class MoleculeFactory:
             charge: int, charge of the molecule
             output_dir: str, path to the output directory
         """
-        RESP_fragment(
+        # RESP_fragment(
+        #     input_files,
+        #     int(charge),
+        #     str(output_dir),
+        #     self.mol_name,
+        #     memory=self.memory, 
+        #     n_threads=self.threads, 
+        #     method_basis=f"{self.resp_method}/{self.resp_basis}",
+        # )
+        generate_atomic_charges(
             input_files,
             int(charge),
             str(output_dir),
             self.mol_name,
+            scheme=scheme,
             memory=self.memory, 
             n_threads=self.threads, 
             method_basis=f"{self.resp_method}/{self.resp_basis}",
+            prefix=prefix
         )
     
     def parameterize(self, pdb_file, output_dir, 

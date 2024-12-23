@@ -225,15 +225,11 @@ class ConformerOptimizer:
                 warming_constraints=True
         ):
         self.input_file = Path(input_file)
-        
-        if self.input_file.suffix == ".pdb":
-            rdmol = Chem.MolFromPDBFile(str(self.input_file), removeHs=False)
-            Chem.MolToXYZFile(rdmol, str(self.input_file.with_suffix(".conformer_opt.xyz")))
-            self.input_file = self.input_file.with_suffix(".conformer_opt.xyz")
+        self.workdir = Path(workdir).resolve()
         
         self.engine = engine
         self.charge = charge
-        self.workdir = Path(workdir).resolve()
+        
         if not os.path.exists(self.workdir):
             os.makedirs(self.workdir)
         if engine.lower() == "xtb":
@@ -287,6 +283,7 @@ class ConformerOptimizer:
         Scan the dihedral angle on a grid.
         concurrent_constraints: a list of constraints for each grid point.
         """
+        
         assert self.engine_name == "xtb"
         self.output_file = self.workdir/f"{self.conformer_prefix}_opt.xyz"
         if not overwrite and os.path.exists(self.workdir/f"{self.conformer_prefix}_opt.xyz"):
@@ -296,6 +293,12 @@ class ConformerOptimizer:
         tmp_workdir = self.workdir/f"xtb_tmp_{self.conformer_prefix}"
         # if not os.path.exists(tmp_workdir):
         tmp_workdir.mkdir(exist_ok=True)
+        
+        if self.input_file.suffix == ".pdb":
+            rdmol = Chem.MolFromPDBFile(str(self.input_file), removeHs=False)
+            Chem.MolToXYZFile(rdmol, str(tmp_workdir/f"{self.input_file.stem}.conformer_opt.xyz"))
+            self.input_file = tmp_workdir/f"{self.input_file.stem}.conformer_opt.xyz"
+            print(self.input_file)
         
         if self.warming_constraints:
             self.clear_constraints()
@@ -399,6 +402,13 @@ class ConformerOptimizer:
             return
         scrach_dir = self.workdir/f"orca_tmp_{self.conformer_prefix}"
         scrach_dir.mkdir(exist_ok=True)
+        
+        if self.input_file.suffix == ".pdb":
+            rdmol = Chem.MolFromPDBFile(str(self.input_file), removeHs=False)
+            Chem.MolToXYZFile(rdmol, str(scrach_dir/f"{self.input_file.stem}.conformer_opt.xyz"))
+            self.input_file = scrach_dir/f"{self.input_file.stem}.conformer_opt.xyz"
+            print(self.input_file)
+        
         self.engine.write_input(
             basis,
             method,
@@ -556,7 +566,11 @@ class OpenMMCalculator(Calculator):
             f.setForceGroup(0)
         integrator = mm.LangevinIntegrator(temperature*unit.kelvin, 1/unit.picosecond, 1.0*unit.femtosecond)
         integrator.setRandomNumberSeed(1106)
-        minimization_platform = mm.Platform.getPlatformByName(device)
+        try:
+            minimization_platform = mm.Platform.getPlatformByName(device)
+        except:
+            minimization_platform = mm.Platform.getPlatformByName('CPU')
+            properties.update({"Threads": "48"})
         simulation = app.Simulation(parm_mol.topology, system, integrator, minimization_platform, properties)
         self.context = simulation.context
     

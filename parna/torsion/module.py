@@ -5,10 +5,10 @@ import json
 from parna.torsion.optim import TorsionOptimizer
 from parna.torsion.fragment import TorsionFragmentizer, C5Fragmentizer
 from parna.torsion.conf import DihedralScanner, ConformerOptimizer, OpenMMCalculator, calculate_relaxed_energy
-from parna.utils import (rd_load_file, map_atoms, SLURM_HEADER_CPU, 
+from parna.utils import (rd_load_file, map_atoms, constrained_map_atoms, SLURM_HEADER_CPU, 
                          atomName_to_index, inverse_mapping, select_from_list, 
                          get_suger_picker_angles_from_pseudorotation,
-                         save_to_yaml, parse_xyz_file)
+                         save_to_yaml, parse_xyz_file, map_atoms_openfe)
 from parna.constant import Hatree2kCalPerMol, PSEUDOROTATION
 from parna.qm.psi4_utils import read_energy_from_log
 from parna.qm.orca_utils import read_energy_from_txt
@@ -22,7 +22,7 @@ from parna.logger import getLogger
 from pathlib import Path
 import numpy as np
 import rdkit.Chem as Chem
-from parna.resp import RESP_fragment
+from parna.resp import RESP_fragment, generate_atomic_charges
 import os
 import yaml
 from ase.io.orca import read_orca_engrad
@@ -785,34 +785,65 @@ class NonCanonicalTorsionFactory(MoleculeFactory):
                 
                 
     def gen(self, submit=False, local=False, overwrite=False):
-        output_dir = Path(self.output_dir)
+        output_dir = Path(self.output_dir).resolve()
         logger.info(f" >>> Output directory: {output_dir} <<<")
         self.fragmentize(output_dir)
         self.all_conformer_files = {}
         self.slurm_files = []
         for vi, vfrag in self.valid_fragments.items():
             logger.info(f"Scanning dihedral {vfrag['fragment'].pivotal_dihedral_quartet[0]}")
-            dsc = DihedralScanner(
-                input_file=output_dir/f"fragment{vi}/fragment.pdb", 
-                dihedrals=[vfrag["fragment"].pivotal_dihedral_quartet[0]],
-                charge=vfrag["fragment"].charge,
-                workdir=output_dir/f"fragment{vi}",
-                conformer_prefix=f"frag_conformer",
-                constraints=[[x["atom_index"], x["value"]] for x in vfrag["fragment_constraints"].values()],
-                force_constant=1.0,  # Hartree/(Bohr**2)
-                warming_constraints=True
-            ) 
+            # dsc = DihedralScanner(
+            #     input_file=output_dir/f"fragment{vi}/fragment.pdb", 
+            #     dihedrals=[vfrag["fragment"].pivotal_dihedral_quartet[0]],
+            #     charge=vfrag["fragment"].charge,
+            #     workdir=output_dir/f"fragment{vi}",
+            #     conformer_prefix=f"frag_conformer",
+            #     constraints=[[x["atom_index"], x["value"]] for x in vfrag["fragment_constraints"].values()],
+            #     force_constant=0.5,  # Hartree/(Bohr**2)
+            #     warming_constraints=True
+            # ) 
 
-            dsc.run(
-                start=self.start,
-                # end=self.end + (360/self.scanning_steps)*(self.scanning_steps-1),
-                end=self.start + (360/self.scanning_steps)*(self.scanning_steps-1),
-                steps=self.scanning_steps,
-                overwrite=overwrite
-            )
-            self.all_conformer_files[vi] = dsc.conformers[vfrag["fragment"].pivotal_dihedral_quartet[0]]
+            # dsc.run(
+            #     start=self.start,
+            #     # end=self.end + (360/self.scanning_steps)*(self.scanning_steps-1),
+            #     end=self.start + (360/self.scanning_steps)*(self.scanning_steps-1),
+            #     steps=self.scanning_steps,
+            #     overwrite=overwrite
+            # )
+            # self.all_conformer_files[vi] = dsc.conformers[vfrag["fragment"].pivotal_dihedral_quartet[0]]
+            
+            self.all_conformer_files[vi] = []
+            for idx, angle in enumerate(np.linspace(self.start, self.start + (360/self.scanning_steps)*(self.scanning_steps-1), self.scanning_steps)):
+                
+                constraints = [
+                    [vfrag["fragment"].pivotal_dihedral_quartet[0], angle]
+                ] + [[x["atom_index"], x["value"]] for x in vfrag["fragment_constraints"].values()]
+            
+                self.all_conformer_files[vi].append(output_dir/f"fragment{vi}"/f"fragment_conformer_{idx}_opt.xyz")
+                if os.path.exists(output_dir/f"fragment{vi}"/f"fragment_conformer_{idx}_opt.xyz"):
+                    continue
+            
+                if idx == 0:
+                    last_file = (output_dir/f"fragment{vi}/fragment.pdb").resolve()
+                else:
+                    last_file = output_dir/f"fragment{vi}"/f"fragment_conformer_{idx-1}_opt.xyz"
+                optimizer = ConformerOptimizer(
+                        input_file=str(last_file), 
+                        engine="xtb",
+                        charge=vfrag["fragment"].charge,
+                        workdir=str(output_dir/f"fragment{vi}"),
+                        conformer_prefix=f"fragment_conformer_{idx}",
+                        constraints=constraints,
+                        force_constant=1.0,
+                        warming_constraints=True
+                )
+                optimizer.run(basis="", method="XTB2", solvent="water", 
+                              sampling=True,
+                              n_proc=self.threads, overwrite=False)
+            
+           
         
-            for idx, conf in enumerate(dsc.conformers[vfrag["fragment"].pivotal_dihedral_quartet[0]]):
+            for idx, conf in enumerate(self.all_conformer_files[vi]):
                 slurm_file = (output_dir/f"fragment{vi}/conf{idx}.slurm").resolve()
                 if vfrag["fragment"].charge != 0:
                     logger.warning(f"Fragment {vi} has charge {vfrag['fragment'].charge}")
@@ -868,11 +899,12 @@ class NonCanonicalTorsionFactory(MoleculeFactory):
             logger.info(f"calculating atomic charges for fragment {vi}")
             frag_dir = Path(output_dir/f"fragment{vi}")
             # get atomic charges
-            charged_mol2 = frag_dir/f"{self.all_conformer_files[vi][0].stem}.resp.mol2"
+            charged_mol2 = frag_dir/f"{self.all_conformer_files[vi][0].stem}.resp2.mol2"
             if overwrite or (not os.path.exists(charged_mol2)):
                 self.charge_molecule(
                     select_from_list(self.all_conformer_files[vi], self.resp_n_conformers, method="even"),
-                    vfrag["fragment"].charge, frag_dir
+                    vfrag["fragment"].charge, frag_dir, scheme="resp2",
+                prefix=f"{self.all_conformer_files[vi][0].stem}.resp2"
                 )
             else:
                 logger.info(f"File exised, using existing charge file {charged_mol2}.")
@@ -909,7 +941,7 @@ class NonCanonicalTorsionFactory(MoleculeFactory):
             for conf in self.all_conformer_files[vi]:
                 # >> read QM energy
                 if self.aqueous:
-                    log_file = conf.parent/f"{conf.stem}.property.txt"
+                    log_file = conf.parent/f"{conf.stem}.property.json"
                     qm_energy = read_energy_from_txt(log_file)
                 else:
                     log_file = conf.with_suffix(".psi4.log")
@@ -1336,17 +1368,30 @@ class EpsilonZetaTorsionFactory(MoleculeFactory):
         frag_dir = output_dir/f"fragment_epsilon_zeta"
         # get atomic charges
         # >>>    CHARGE    <<<
-        charged_mol2 = frag_dir/f"{self.all_conformer_files[0].stem}.resp.mol2"
+        charged_mol2 = frag_dir/f"{self.all_conformer_files[0].stem}.resp2.mol2"
         if overwrite or (not os.path.exists(charged_mol2)):
-            RESP_fragment(
+            # RESP_fragment(
+            #     select_from_list(self.all_conformer_files, self.resp_n_conformers, method="even"),
+            #     self.valid_fragment["fragment"].charge,
+            #     str(frag_dir),
+            #     self.mol_name,
+            #     memory=self.memory, 
+            #     n_threads=self.threads, 
+            #     method_basis=f"{self.resp_method}/{self.resp_basis}",
+            # )
+            generate_atomic_charges(
                 select_from_list(self.all_conformer_files, self.resp_n_conformers, method="even"),
                 self.valid_fragment["fragment"].charge,
                 str(frag_dir),
                 self.mol_name,
+                scheme="resp2",
                 memory=self.memory, 
                 n_threads=self.threads, 
                 method_basis=f"{self.resp_method}/{self.resp_basis}",
+                prefix=f"{self.all_conformer_files[0].stem}.resp2",
+                overwrite=overwrite
             )
+            
         else:
             logger.info(f"File exised, using existing charge file {charged_mol2}.")
         charged_pmd_mol = pmd.load_file(str(charged_mol2))
@@ -1398,7 +1443,7 @@ class EpsilonZetaTorsionFactory(MoleculeFactory):
         for conf in self.all_conformer_files:
             # >> read QM energy
             if self.aqueous:
-                log_file = conf.parent/f"{conf.stem}.property.txt"
+                log_file = conf.parent/f"{conf.stem}.property.json"
                 qm_energy = read_energy_from_txt(log_file)
             else:
                 log_file = conf.with_suffix(".psi4.log")
@@ -1554,12 +1599,13 @@ class SugarPuckerTorsionFactory(MoleculeFactory):
         for ctype in ["O3'-constraint", "O2'-constraint", "O5'-constraint"]:
             constraints = DIHDEDRAL_CONSTRAINTS[ctype]
             atom_symbols = constraints["atoms"]
-            if np.all([self.mol_suger_symbol_index[a] in frag.parent_fragment_mapping for a in atom_symbols]):
-                self.valid_fragment["fragment_constraints"][ctype] = {
-                    "type": "dihedral",
-                    "atom_index": [frag.parent_fragment_mapping[self.mol_suger_symbol_index[a]] for a in atom_symbols],
-                    "value": constraints["angle"],
-                }
+            if np.all([a in self.mol_suger_symbol_index for a in atom_symbols]):
+                if np.all([self.mol_suger_symbol_index[a] in frag.parent_fragment_mapping for a in atom_symbols]):
+                    self.valid_fragment["fragment_constraints"][ctype] = {
+                        "type": "dihedral",
+                        "atom_index": [frag.parent_fragment_mapping[self.mol_suger_symbol_index[a]] for a in atom_symbols],
+                        "value": constraints["angle"],
+                    }
         if extra_restraints is not None:
             self.valid_fragment["fragment_constraints"]["extra"] = {
                 "type": "dihedral",
@@ -1629,7 +1675,7 @@ class SugarPuckerTorsionFactory(MoleculeFactory):
             if submit:
                 logger.info(f"Submiting {slurm_file}")
                 os.system(f"LLsub {slurm_file}")
-            for suffix in [".gbw", ".cpcm", ".densities"]:
+            for suffix in [".gbw", ".cpcm", ".densities", ".bibtex", ".cpcm_corr", ".densitiesinfo", ".inp.orca.log"]:
                 if os.path.exists(conf.with_suffix(suffix)):
                     os.remove(conf.with_suffix(suffix))
             os.chdir(cwd)
@@ -1641,17 +1687,29 @@ class SugarPuckerTorsionFactory(MoleculeFactory):
         frag_dir = Path(output_dir / f"fragment_sugar_pucker")
         # get atomic charges
         # >>>    CHARGE    <<<
-        charged_mol2 = frag_dir/f"{self.all_conformer_files[0].stem}.resp.mol2"
+        charged_mol2 = frag_dir/f"{self.all_conformer_files[0].stem}.resp2.mol2"
         if overwrite or (not os.path.exists(charged_mol2)):
-            RESP_fragment(
+            # RESP_fragment(
+            #     select_from_list(self.all_conformer_files, self.resp_n_conformers, method="even"),
+            #     self.valid_fragment["fragment"].charge,
+            #     str(frag_dir),
+            #     self.mol_name,
+            #     memory=self.memory, 
+            #     n_threads=self.threads, 
+            #     method_basis=f"{self.resp_method}/{self.resp_basis}",
+            # )
+            generate_atomic_charges(
                 select_from_list(self.all_conformer_files, self.resp_n_conformers, method="even"),
                 self.valid_fragment["fragment"].charge,
                 str(frag_dir),
                 self.mol_name,
+                scheme="resp2",
                 memory=self.memory, 
                 n_threads=self.threads, 
                 method_basis=f"{self.resp_method}/{self.resp_basis}",
+                prefix=f"{self.all_conformer_files[0].stem}.resp2"
             )
+            
         else:
             logger.info(f"File exised, using existing charge file {charged_mol2}.")
         charged_pmd_mol = pmd.load_file(str(charged_mol2))
@@ -1691,8 +1749,8 @@ class SugarPuckerTorsionFactory(MoleculeFactory):
         for conf in self.all_conformer_files:
             # >> read QM energy
             if self.aqueous:
-                log_file = conf.parent/f"{conf.stem}.property.txt"
-                qm_energy = read_energy_from_txt(log_file)
+                log_file = conf.parent/f"{conf.stem}.property.json"
+                qm_energy = read_energy_from_txt(log_file, source="orca", fmt="json")
             else:
                 log_file = conf.with_suffix(".psi4.log")
                 qm_energy = read_energy_from_log(log_file)
@@ -1958,11 +2016,12 @@ class ChiTorsionFactory(MoleculeFactory):
         logger.info(f"calculating atomic charges for fragment Chi")
         frag_dir = Path(output_dir/f"fragment_chi")
         # get atomic charges
-        charged_mol2 = frag_dir/f"{self.all_conformer_files[0].stem}.resp.mol2"
+        charged_mol2 = frag_dir/f"{self.all_conformer_files[0].stem}.resp2.mol2"
         if overwrite or (not os.path.exists(charged_mol2)):
             self.charge_molecule(
                 select_from_list(self.all_conformer_files, self.resp_n_conformers, method="even"),
-                self.valid_fragment["fragment"].charge, frag_dir
+                self.valid_fragment["fragment"].charge, frag_dir, scheme="resp2",
+                prefix=f"{self.all_conformer_files[0].stem}.resp2"
             )
         else:
             logger.info(f"File exised, using existing charge file {charged_mol2}.")
@@ -2144,13 +2203,27 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
         self.mpatcher = SugarPatcher(self.mol)
         self.patched_mol = self.mpatcher.patch_three_prime_end()
         
-        self.sugar_fragment_mapping = map_atoms(
+        # self.sugar_fragment_mapping = map_atoms(
+        #     self.sugar_template_with_PO3_mol, 
+        #     self.patched_mol, 
+        #     ringMatchesRingOnly=False, 
+        #     completeRingsOnly=False,
+        # )
+        sugar_fragment_mapping_exact = map_atoms_openfe(
             self.sugar_template_with_PO3_mol, 
             self.patched_mol, 
-            ringMatchesRingOnly=False, 
-            completeRingsOnly=False,
+            element_change=False
+        )
+        self.sugar_fragment_mapping = constrained_map_atoms(
+                self.sugar_template_with_PO3_mol, 
+                self.patched_mol, 
+                constrained_mapping=sugar_fragment_mapping_exact,
+                ringMatchesRingOnly=False, 
+                completeRingsOnly=False,
+                atomCompare = Chem.rdFMCS.AtomCompare.CompareAny
         )
         
+        print(self.sugar_fragment_mapping)
         sugar_tmpl_name_to_index = atomName_to_index(self.sugar_template_with_PO3_mol)
         mapping_dict = {}
         for atom in self.sugar_fragment_mapping:
@@ -2198,13 +2271,25 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
         self.sugar_template_file = str(TEMPLATE_DIR/"sugar_template.pdb")
         self.sugar_template_mol = Chem.MolFromPDBFile(str(self.sugar_template_file), removeHs=False)
     
-        sugar_fragment_mapping = map_atoms(
-            self.sugar_template_mol,
-            self.mol, 
-            ringMatchesRingOnly=False, 
-            completeRingsOnly=False,
+        # sugar_fragment_mapping = map_atoms(
+        #     self.sugar_template_mol,
+        #     self.mol, 
+        #     ringMatchesRingOnly=False, 
+        #     completeRingsOnly=False,
+        # )
+        sugar_fragment_mapping_exact = map_atoms_openfe(
+            self.sugar_template_with_PO3_mol, 
+            self.patched_mol, 
+            element_change=False
         )
-        
+        sugar_fragment_mapping = constrained_map_atoms(
+                self.sugar_template_with_PO3_mol, 
+                self.patched_mol, 
+                constrained_mapping=sugar_fragment_mapping_exact,
+                ringMatchesRingOnly=False, 
+                completeRingsOnly=False,
+                atomCompare = Chem.rdFMCS.AtomCompare.CompareAny
+        )
         mapping_dict = {}
         for atom in sugar_fragment_mapping:
             mapping_dict[atom[0]] = atom[1]
@@ -2249,17 +2334,37 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
         # self.mpatcher = SugarPatcher(self.mol)
         # self.patched_mol = self.mpatcher.patch_three_prime_end()
         
-        sugar_fragment_mapping = map_atoms(
+        # sugar_fragment_mapping = map_atoms(
+        #     self.sugar_template_with_PO3_mol, 
+        #     frag.mol, 
+        #     ringMatchesRingOnly=False, 
+        #     completeRingsOnly=False,
+        #     atomCompare=Chem.rdFMCS.AtomCompare.CompareAny
+        # )
+        # sugar_fragment_mapping = map_atoms_openfe(
+        #     self.sugar_template_with_PO3_mol, 
+        #     frag.mol, 
+        #     element_change=True
+        # )
+        sugar_fragment_mapping_exact = map_atoms_openfe(
             self.sugar_template_with_PO3_mol, 
             frag.mol, 
-            ringMatchesRingOnly=False, 
-            completeRingsOnly=False,
+            element_change=False
         )
-        
+        sugar_fragment_mapping = constrained_map_atoms(
+                self.sugar_template_with_PO3_mol, 
+                frag.mol, 
+                constrained_mapping=sugar_fragment_mapping_exact,
+                ringMatchesRingOnly=False, 
+                completeRingsOnly=False,
+                atomCompare = Chem.rdFMCS.AtomCompare.CompareAny
+        )
+
         sugar_tmpl_name_to_index = atomName_to_index(self.sugar_template_with_PO3_mol)
         mapping_dict = {}
         for atom in sugar_fragment_mapping:
             mapping_dict[atom[0]] = atom[1]
+      
         sugar_fragment_mapping = mapping_dict
         _atom_names = ["C1'", "C2'", "C3'", "C4'", "C5'", "O2'", "O3'","O4'", "O5'", "HO2'", "HO5'", "P", "OP1", "OP2", "O52", "C01"]
         mol_suger_symbol_index = {}
@@ -2339,11 +2444,17 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
                         commands.append(frag_command)
                         
         # dispatch jobs
-        dispatch_commands_to_jobs(
-            commands, n_jobs=8, job_prefix="frag_opt", work_dir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
-            output_dir=str(output_dir/f"fragment_sugar_epsilon_zeta"), submit=submit, submit_options=f"-s {self.threads}"
-            
-        )    
+         
+        if len(commands) > 0:
+            dispatch_commands_to_jobs(
+                commands, n_jobs=8, job_prefix="frag_opt", work_dir=str(output_dir/f"fragment_sugar_epsilon_zeta"),
+                output_dir=str(output_dir/f"fragment_sugar_epsilon_zeta"), submit=submit, submit_options=f"-s {self.threads}"
+            )   
+            logger.info(f"Dispatched {len(commands)} jobs.")
+            exit(0)
+        else:
+            logger.info(f"No jobs dispatched.")
+        
                         
                         # if si + ei + zi == 0:
                         #     last_file = str(output_dir/f"fragment_sugar_epsilon_zeta/fragment.pdb")
@@ -2465,9 +2576,6 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
             #         del atoms
             #         if os.path.exists(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.log"):
             #             os.remove(output_dir/f"fragment_sugar_epsilon_zeta/frag_ls_e{ei}_z{zi}_opt.log")
- 
-        
-    
     
     
     def gen(self, 
@@ -2504,7 +2612,6 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
                             [self.valid_fragment["zeta"], zeta],
                             [self.valid_fragment["sugar-occo"], sangle],
                         ] + [[x["atom_index"], x["value"]] for x in self.valid_fragment["fragment_constraints"].values()]
-                        
                         
                         # if si + ei + zi == 0:
                         #     last_file = str(output_dir/f"fragment_sugar_epsilon_zeta/fragment.pdb")
@@ -2840,16 +2947,27 @@ class SugarEpsilonZetaTorsionFactory(MoleculeFactory):
         frag_dir = output_dir/f"fragment_sugar_epsilon_zeta"
         # get atomic charges
         # >>>    CHARGE    <<<
-        charged_mol2 = frag_dir/f"{self.all_conformer_files[0].stem}.resp.mol2"
+        charged_mol2 = frag_dir/f"{self.all_conformer_files[0].stem}.resp2.mol2"
         if overwrite or (not os.path.exists(charged_mol2)):
-            RESP_fragment(
+            # RESP_fragment(
+            #     select_from_list(self.all_conformer_files, self.resp_n_conformers, method="even"),
+            #     self.valid_fragment["fragment"].charge,
+            #     str(frag_dir),
+            #     self.mol_name,
+            #     memory=self.memory, 
+            #     n_threads=self.threads, 
+            #     method_basis=f"{self.resp_method}/{self.resp_basis}",
+            # )
+            generate_atomic_charges(
                 select_from_list(self.all_conformer_files, self.resp_n_conformers, method="even"),
                 self.valid_fragment["fragment"].charge,
                 str(frag_dir),
                 self.mol_name,
+                scheme="resp2",
                 memory=self.memory, 
                 n_threads=self.threads, 
                 method_basis=f"{self.resp_method}/{self.resp_basis}",
+                prefix=f"{self.all_conformer_files[0].stem}.resp2"
             )
         else:
             logger.info(f"File exised, using existing charge file {charged_mol2}.")

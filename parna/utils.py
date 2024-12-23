@@ -7,7 +7,9 @@ import parmed as pmd
 import numpy as np
 import yaml
 import random
+import openfe
 from parna.constant import ATOMIC_NUMBERS
+from parna.atom_mapper import FuzzyElementCompareAtoms
 
 SLURM_HEADER_CPU = """#!/bin/bash
 source /etc/profile
@@ -74,8 +76,69 @@ def atomName_to_index(mol):
     return atomName_to_index
 
 
+def get_mapping_from_pattern(pattern, mol1, mol2):
+    template_Match = mol1.GetSubstructMatch(pattern)
+    query_Match = mol2.GetSubstructMatch(pattern)
+    atom_mapping = list(zip(template_Match, query_Match))
+    return atom_mapping
+
+
+class EnforceMappingAcceptance(rdFMCS.MCSAcceptance):
+    
+    def register_atom_mapping(self, custom_map):
+        self.custom_map = custom_map
+    
+    def __call__(self, mol1, mol2, atom_idx_match, bond_idx_match, params):
+        atom_idx_match_dict = {x[0]: x[1] for x in atom_idx_match}
+        for mol1_atom_idx, mol2_atom_idx in self.custom_map:
+            # if mol1.GetAtomWithIdx(mol1_atom_idx).GetAtomicNum() == 0:
+            #     return True 
+            # if mol2.GetAtomWithIdx(mol2_atom_idx).GetAtomicNum() == 0:
+            #     return True
+            if mol1_atom_idx in atom_idx_match_dict and atom_idx_match_dict[mol1_atom_idx] == mol2_atom_idx:
+                continue
+            else:
+                return False
+        return True
+
+def constrained_map_atoms(
+        template, query, constrained_mapping, 
+        ringMatchesRingOnly=False, 
+        bondCompare=rdFMCS.BondCompare.CompareAny, 
+        completeRingsOnly=False, 
+        atomCompare=rdFMCS.AtomCompare.CompareAny,
+        seed=None
+    ):
+    
+    params = rdFMCS.MCSParameters()
+    params.BondTyper = bondCompare
+    fuzzy_compare = FuzzyElementCompareAtoms(
+        comparison=atomCompare,
+        custom_map=constrained_mapping,
+        n_atoms_mol1=template.GetNumAtoms(),
+        n_atoms_mol2=query.GetNumAtoms()
+    )
+    params.AtomTyper = fuzzy_compare
+    
+    params.CompleteRingsOnly = completeRingsOnly
+    params.RingMatchesRingOnly = ringMatchesRingOnly
+    # params.Verbose = True
+    if seed is not None:
+        params.InitialSeed = seed
+    # print("params:", params.CompleteRingsOnly, params.CompleteRingsOnly)
+    compare = [template, query]
+    res: rdFMCS.MCSResult = rdFMCS.FindMCS(compare, params)
+    atom_maps = get_mapping_from_pattern(Chem.MolFromSmarts(res.smartsString),
+                                        compare[0], compare[1])
+    return atom_maps
+    
+    
 def map_atoms(template, query, ringMatchesRingOnly=False, \
-    bondCompare=rdFMCS.BondCompare.CompareAny, completeRingsOnly=False, atomCompare=rdFMCS.AtomCompare.CompareElements):
+        bondCompare=rdFMCS.BondCompare.CompareAny, 
+        completeRingsOnly=False, 
+        atomCompare=rdFMCS.AtomCompare.CompareElements,
+        fuzzy_matching=False
+    ):
     mcs = rdFMCS.FindMCS(
             [template, query], 
             ringMatchesRingOnly=ringMatchesRingOnly,  # PDB doesn't have ring information
@@ -84,11 +147,32 @@ def map_atoms(template, query, ringMatchesRingOnly=False, \
          atomCompare=atomCompare
     )
     patt = Chem.MolFromSmarts(mcs.smartsString)
-    template_Match = template.GetSubstructMatch(patt)
-    query_Match = query.GetSubstructMatch(patt)
-    atom_mapping = list(zip(template_Match, query_Match))
+    atom_mapping = get_mapping_from_pattern(
+        patt, template, query
+    )
+    # print(atom_mapping, "here")
+    if fuzzy_matching:
+        atom_mapping = constrained_map_atoms(
+            template, query, atom_mapping, 
+            ringMatchesRingOnly=ringMatchesRingOnly, 
+            bondCompare=rdFMCS.BondCompare.CompareAny, 
+            completeRingsOnly=completeRingsOnly, 
+            atomCompare=rdFMCS.AtomCompare.CompareAny,
+            seed=mcs.smartsString
+        )
     return atom_mapping
 
+
+def map_atoms_openfe(template, query, element_change=True):
+    
+    tmpl_comp = openfe.SmallMoleculeComponent.from_rdkit(template)
+    query_comp = openfe.SmallMoleculeComponent.from_rdkit(query)
+
+    mapper = openfe.LomapAtomMapper(max3d=1000.0, element_change=element_change)
+    mapping = next(mapper.suggest_mappings(tmpl_comp, query_comp))
+    mapping_candidate = (mapping).componentA_to_componentB
+    return [(i, j) for i, j in mapping_candidate.items()]
+    
 
 def getStringlist(mlist):
     return [str(i) for i in mlist]
@@ -181,7 +265,7 @@ def split_xyz_file(input_file_path, output_folder, every_frame=1, output_prefix=
         conformer_data = lines[start_index:end_index]
 
         # Generate the output file path for the current conformer
-        output_file_path = f"{output_folder}/{output_prefix}_{conformer_index:06d}.xyz"
+        output_file_path = f"{output_folder}/{output_prefix}_{conformer_index}.xyz"
 
         # Write the conformer data to the individual XYZ file
         with open(output_file_path, 'w') as individual_xyz_file:
