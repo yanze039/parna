@@ -140,7 +140,8 @@ def build_residue_pdb_block(
         residue_tail_idx=None, template_tail_idx=None, 
         residue_head_idx=None, template_head_idx=None,
         only_heavy_atoms=True, 
-        atomCompare=Chem.rdFMCS.AtomCompare.CompareAnyHeavyAtom
+        atomCompare=Chem.rdFMCS.AtomCompare.CompareAnyHeavyAtom,
+        fuzzy_matching=False
     ):
     logger.info(f"Building residue {residue_name} from {input_file} using template {template_residue}")
     rd_mol = rd_load_file(str(input_file), removeHs=False, atomtype=atomtype)
@@ -157,9 +158,9 @@ def build_residue_pdb_block(
         )
     else:
         if only_heavy_atoms:
-            rd_tmpl_block = Chem.MolFromPDBFile(str(template_residue), removeHs=True, sanitize=False)
+            rd_tmpl_block = rd_load_file(str(template_residue), removeHs=True, sanitize=False)
         else:
-            rd_tmpl_block = Chem.MolFromPDBFile(str(template_residue), removeHs=False, sanitize=False)
+            rd_tmpl_block = rd_load_file(str(template_residue), removeHs=False, sanitize=False)
     # sanitize the molecule to update the ring-info, otherwise the atom mapping will fail.
     # Not sanitize --> RuntimeError: Pre-condition Violation, RingInfo not initialized.
     Chem.SanitizeMol(rd_tmpl_block)
@@ -167,12 +168,14 @@ def build_residue_pdb_block(
     editable_mol = Chem.EditableMol(rd_mol)
     editable_tmpl_mol = Chem.EditableMol(rd_tmpl_block)
     if residue_tail_idx is not None and template_tail_idx is not None:
+        logger.info("Patching residue tail")
         new_atom_tail_idx = editable_mol.AddAtom(Chem.Atom(57))
         editable_mol.AddBond(residue_tail_idx, new_atom_tail_idx, Chem.BondType.DOUBLE)
         new_atom_tail_tmpl_idx = editable_tmpl_mol.AddAtom(Chem.Atom(57))
         editable_tmpl_mol.AddBond(template_tail_idx, new_atom_tail_tmpl_idx, Chem.BondType.DOUBLE)
     
     if residue_head_idx is not None and template_head_idx is not None:
+        logger.info("Patching residue head")
         new_atom_head_idx = editable_mol.AddAtom(Chem.Atom(58))
         editable_mol.AddBond(residue_head_idx, new_atom_head_idx, Chem.BondType.SINGLE)
         new_atom_head_tmpl_idx = editable_tmpl_mol.AddAtom(Chem.Atom(58))
@@ -181,8 +184,11 @@ def build_residue_pdb_block(
     rd_tmpl_block = editable_tmpl_mol.GetMol() 
     rd_mol = editable_mol.GetMol()
     
-    atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, completeRingsOnly=True, 
-                             atomCompare=atomCompare, bondCompare=bondCompare)
+    atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, 
+                             completeRingsOnly=True, 
+                             atomCompare=Chem.rdFMCS.AtomCompare.CompareElements, 
+                             bondCompare=Chem.rdFMCS.BondCompare.CompareAny,
+                             fuzzy_matching=fuzzy_matching)
     logger.info("Atom mapping:")
     logger.info(atom_mapping)
     logger.info(f"{template_head_idx} {residue_head_idx}, ")
@@ -208,7 +214,7 @@ def build_residue_pdb_block(
         rd_mol,
         rd_tmpl_block,
         atom_mapping=inverse_atom_mapping,
-        force_constant=100.0,
+        force_constant=300.0,
     )
 
     # Find BUG: the atom names are not preserved from mol2. we use parmed to fix this.
@@ -297,12 +303,12 @@ def build_residue_with_phosphate(input_file, atom_name_mapping,
     # align to template
     rd_mol = rd_load_file(input_file, removeHs=False)
     template = Chem.MolFromPDBFile(str(TEMPLATE/"sugar_template.pdb"), removeHs=False)
-    atom_maps = map_atoms(rd_mol, template)
+    atom_maps = map_atoms(rd_mol, template, fuzzy_matching=True)
     new_mol = flexible_align(
         rd_mol,
         template,
         atom_mapping=atom_maps,
-        force_constant=100.0,
+        force_constant=200.0,
     )
 
     _pmd_mol = pmd.load_file(str(input_file))
