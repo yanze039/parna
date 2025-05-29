@@ -302,30 +302,35 @@ def fit_charges_frag(input_file, wfn_directory, output_dir, residue_name,
     else:
         tmp_pdb = input_file
     
-    File2MOL2(
-        tmp_pdb,
-        "pdb",
-        (output_dir/f"{Path(input_file).stem}.tmp.mol2").resolve(), 
-        "amber",
-        str(residue_name),
-        charge=int(total_charge_mol)
-    )
+    # File2MOL2(
+    #     tmp_pdb,
+    #     "pdb",
+    #     (output_dir/f"{Path(input_file).stem}.tmp.mol2").resolve(), 
+    #     "amber",
+    #     str(residue_name),
+    #     charge=int(total_charge_mol)
+    # )
     
-    mol2 = pmd.load_file(str(output_dir/f"{Path(input_file).stem}.tmp.mol2"))
-    
+    # mol2 = pmd.load_file(str(output_dir/f"{Path(input_file).stem}.tmp.mol2"))
+    mol2 = pmd.load_file(str(tmp_pdb))
     for idx, atom in enumerate(mol2.atoms):
-        charge_info = charge_dict[idx]
-        assert charge_info["element"] == PeriodicTable.GetElementSymbol(atom.element)
+        charge_info = charge_dict[idx]        
+        assert charge_info["element"] == PeriodicTable.GetElementSymbol(atom.element), \
+            f"Element mismatch: {charge_info['element']} != {PeriodicTable.GetElementSymbol(atom.element)}"
         atom.charge = charge_info["charge"]
         atom.type   = PeriodicTable.GetElementSymbol(atom.element)
+    mol2 = pmd.modeller.residue.ResidueTemplate.from_residue(mol2.residues[0])
+    mol2.name = residue_name
     if prefix is not None:
         mol2.save(str(output_dir/f"{prefix}.mol2"), overwrite=True)
     else:
-        mol2.save(str(output_dir/f"{Path(input_file).stem}.resp.mol2"), overwrite=True)
-    logger.info("File saved to: " + str(output_dir/f"{Path(input_file).stem}.resp.mol2"))
+        mol2.save(str(output_dir/f"{Path(input_file).stem}.mol2"), overwrite=True)
+    logger.info("File saved to: " + str(output_dir/f"{Path(input_file).stem}.mol2"))
     logger.info(f"Charge fitting finished for {input_file}")
-    os.remove(output_dir/f"{Path(input_file).stem}.tmp.mol2")
-    os.remove(tmp_pdb)
+    for tf in [tmp_pdb, output_dir/f"{Path(input_file).stem}.tmp.mol2"]:
+        if os.path.exists(tf):
+            os.remove(tf)
+
 
 
 

@@ -4,6 +4,7 @@ import os
 from parna.logger import getLogger
 from typing import List
 import shutil
+import copy
 
 
 logger = getLogger("parna.parm")
@@ -192,8 +193,22 @@ def alchemical_parameterize(oligoFile1, oligoFile2, proteinFile=None, external_l
             logger.info("Atomtype check passed")
 
 
-def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_forcefield="gaff2", parm_set="parm10", atom_type="amber", sinitize=False):  
-    _mol2_file = Path(input_file).parent / (Path(input_file).stem + ".tmp.mol2") 
+def get_residue_template_container(pmd_mol):
+    if (type(pmd_mol) == pmd.modeller.residue.ResidueTemplateContainer):
+        container = pmd_mol
+    elif (type(pmd_mol) == pmd.structure.Structure):
+        container = pmd.modeller.residue.ResidueTemplateContainer().from_structure(pmd_mol)
+    elif (type(pmd_mol) == pmd.modeller.residue.ResidueTemplate):
+        container = pmd.modeller.residue.ResidueTemplateContainer().from_library({pmd_mol.name: pmd_mol})
+    else:
+        raise ValueError("Unknown type")
+    return container
+
+
+def generate_frcmod(input_file, output_file, major_forcefield="ol3", 
+                    minor_forcefield="gaff2", parm_set="parm10", atom_type="amber", 
+                    sinitize=True, clean=True, output_mol2=None):  
+    _mol2_file = Path(output_file).parent / (Path(input_file).stem + ".tmp.mol2") 
     if (not Path(input_file).suffix == ".mol2") or sinitize:
         
         command_antechamber = [
@@ -205,11 +220,58 @@ def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_force
             "-at", atom_type,
             "-pf", "y"
         ]
-        print("here")
         logger.info(" ".join(command_antechamber))
-        os.system(" ".join(command_antechamber))
+        code = os.system(" ".join(command_antechamber))
+        if code != 0:
+            logger.error("Antechamber failed")
+            raise RuntimeError("Antechamber failed")
     else:
         shutil.copy(input_file, _mol2_file)
+    
+    # check if any DU atom exists in the mol2 file
+    _tmp_mol = pmd.load_file(str(_mol2_file))
+    tmp_Structure = pmd.Structure()
+    container = get_residue_template_container(_tmp_mol)
+    _mol2_file_2 = None
+    for idx, residue in enumerate(container):
+        for atom in residue.atoms:
+            # BUG: antechamber does not handle DU atom correctly
+            # handle DU atom and NO atom.
+            # DU atoms are atom types not defined in Amber forcefield
+            # NO atoms can be assigned by antechamber, 
+            # but it actually does not exist in PARM10.
+            if atom.type == "DU" or atom.type == "NO" or atom.type == "N1":
+                logger.warning(f"DU atom found in mol2 file {atom}")
+                logger.warning("Replacing DU with atom type from gaff2")
+                _mol2_file_2 = Path(output_file).parent / (Path(input_file).stem + ".tmp2.mol2") 
+                if not os.path.exists(_mol2_file_2):
+                    command_antechamber = [
+                        "antechamber",
+                        "-fi", Path(input_file).suffix[1:],
+                        "-i", str(input_file),
+                        "-fo", "mol2",
+                        "-o", str(_mol2_file_2),
+                        "-at", "gaff2",
+                        "-pf", "y"
+                    ]
+                    logger.info(" ".join(command_antechamber))
+                    code = os.system(" ".join(command_antechamber))
+                    if code != 0:
+                        logger.error("Antechamber failed")
+                        raise RuntimeError("Antechamber failed")
+                _tmp_mol_container_2 = get_residue_template_container(pmd.load_file(str(_mol2_file_2)))
+                atom.type = _tmp_mol_container_2[idx].map[atom.name].type
+            tmp_Structure.add_atom(
+                copy.deepcopy(atom), 
+                resname=residue.name,
+                resnum=idx+1,
+                chain="A"
+            )
+    tmp_Structure.assign_bonds({r.name: r for r in container})
+    tmp_Structure.save(str(_mol2_file), overwrite=True)
+    if output_mol2 is not None:
+        shutil.copy(_mol2_file, output_mol2)
+    
     _output_file = Path(output_file).parent / ("_" + Path(output_file).stem + ".frcmod")
     command_major = [
         "parmchk2",
@@ -221,7 +283,10 @@ def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_force
         "-frc", major_forcefield
     ]
     logger.info(" ".join(command_major))
-    os.system(" ".join(command_major))
+    code = os.system(" ".join(command_major))
+    if code != 0:
+        logger.error("Parmchk2 failed")
+        raise RuntimeError("Parmchk2 failed")
     command_minor = [
         "parmchk2",
         "-i", str(_output_file),
@@ -234,8 +299,12 @@ def generate_frcmod(input_file, output_file, major_forcefield="ol3", minor_force
     ]
     logger.info(" ".join(command_minor))
     os.system(" ".join(command_minor))
-    os.remove(_mol2_file)
-    os.remove(_output_file)
+    if clean:
+        os.remove(_mol2_file)
+        os.remove(_output_file)
+        if _mol2_file_2 is not None:
+            if os.path.exists(_mol2_file_2):
+                os.remove(_mol2_file_2)
 
 
 if __name__ == "__main__":

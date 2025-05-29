@@ -2028,14 +2028,14 @@ class ChiTorsionFactory(MoleculeFactory):
         charged_pmd_mol = pmd.load_file(str(charged_mol2))
         logger.info("Parameterizing fragment")
         parm7 = frag_dir/f"{self.mol_name}_frag_chi.parm7"
-        if overwrite or (not os.path.exists(parm7)):
-            if self.aqueous:
-                addons = ["set default PBRadii mbondi"]
-            else:
-                addons = []
-            self.parameterize(str(output_dir/f"fragment_chi/fragment.pdb"), frag_dir, prefix=f"{self.mol_name}_frag_chi", addons=addons)
+        # if overwrite or (not os.path.exists(parm7)):
+        if self.aqueous:
+            addons = ["set default PBRadii mbondi"]
         else:
-            logger.info(f"File exised, using existing parameter file {parm7}.")
+            addons = []
+        self.parameterize(str(output_dir/f"fragment_chi/fragment.pdb"), frag_dir, prefix=f"{self.mol_name}_frag_chi", addons=addons)
+        # else:
+        #     logger.info(f"File exised, using existing parameter file {parm7}.")
         parm_mol = pmd.load_file(str(parm7))
         for idx, atom in enumerate(parm_mol.atoms):
             atom.charge = charged_pmd_mol.atoms[idx].charge

@@ -84,7 +84,6 @@ PSEUDOROTATION = {
         "phase": 15.43,
         "intensity": 0.6760
     },
-    
     "C2'-endo": {
         "phase": 162.65,
         "intensity": 0.6706

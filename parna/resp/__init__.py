@@ -117,8 +117,6 @@ def generate_atomic_charges(
         pmd_resp2.save(str(resp2_charged_mol2), overwrite=True)
         
 
-
-
 def _generate_atomic_charges(
         input_files: Union[str, List[str]],
         charge,
@@ -153,7 +151,8 @@ def _generate_atomic_charges(
             prefix=prefix,
             skip_constraint=skip_constraint,
             charge_constrained_groups=charge_constrained_groups,
-            engine="orca"
+            engine="orca",
+            overwrite=overwrite
         )
     else:
         if generate_conformers and len(input_files) == 1:
@@ -200,7 +199,8 @@ def RESP(
         aqueous=False,
         engine="psi4",
         charge_constrained_groups=["OH5", "OH3"],
-        prefix=None
+        prefix=None,
+        overwrite=True
     ):
     logger.info(f"Generating conformers for {input_file}...")
     gen_conformer(
@@ -214,7 +214,9 @@ def RESP(
     conformer_files = list(Path(output_dir).glob("resp_conformer_*.xyz"))
     for conformer_file in conformer_files:
         logger.info(f"Calculating energy for {conformer_file}")
-        if os.path.exists(f"{output_dir}/{(conformer_file).stem}.psi4.fchk"):
+        if (not overwrite) and os.path.exists(f"{output_dir}/{(conformer_file).stem}.psi4.fchk"):
+            continue
+        if (not overwrite) and os.path.exists(f"{output_dir}/{(conformer_file).stem}.molden"):
             continue
         calculate_energy(
             conformer_file,
@@ -232,7 +234,7 @@ def RESP(
     else:
         wfn_file_type = "fchk"
     fit_charges(
-        input_file=input_file,
+        input_file=conformer_files[0],
         wfn_directory=output_dir, 
         output_dir=output_dir, 
         residue_name=residue_name, 

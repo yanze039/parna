@@ -10,6 +10,7 @@ logger = getLogger(__name__)
 def get_softcore_region(query, template, return_atom_name=False, on_linker=False):
     atom_mapping = map_atoms(query, template, ringMatchesRingOnly=True, 
                              atomCompare=rdFMCS.AtomCompare.CompareElements, 
+                             matchChiralTag=True,
                              completeRingsOnly=True)
     atom_mapping_openfe = map_atoms_openfe(query, template, element_change=False)
     if len(atom_mapping_openfe) < len(atom_mapping):

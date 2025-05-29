@@ -54,11 +54,13 @@ def gen_conformer(query_file, scan_steps=6, charge=0, output_dir="conformers", s
     query_file = Path(query_file)
     charge = charge
     output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True)
     if not output_dir.exists():
         output_dir.mkdir(exist_ok=True)
 
     # Load the template
     rd_template = Chem.MolFromPDBFile(str(template_file), removeHs=False)
+    print(query_file, charge)
     rd_query = rd_load_file(query_file, charge=charge)
     # Find the mapping
     atom_maps = map_atoms(rd_template, rd_query)
@@ -87,7 +89,20 @@ def gen_conformer(query_file, scan_steps=6, charge=0, output_dir="conformers", s
     base_atom_1_neighbors = rd_query.GetAtomWithIdx(base_atom_1).GetNeighbors()
     base_atom_2_candidate = [atom.GetIdx() for atom in base_atom_1_neighbors if atom.GetIdx() not in mapping_dict.values()]
     if len(base_atom_2_candidate) == 0:
-        raise ValueError("No valid neighbors of base atom 1 found")
+        logger.warning("No valid neighbors of base atom 1 found")
+        logger.warning("Generating single point calculation and geometry optimization")
+        xtb(
+            coord=query_file,
+            opt=True,
+            charge=charge,
+            workdir=output_dir
+        )
+        if query_file.suffix == ".pdb":
+            mol = Chem.MolFromPDBFile(str(query_file), removeHs=False)
+            Chem.MolToXYZFile(mol, str(output_dir/"xtbout.xyz"))
+        os.rename(output_dir/"xtbout.xyz", output_dir/f"{prefix}_0.xyz")
+        return 
+        
     base_atom_2 = base_atom_2_candidate[0]
 
     dihedral_atoms = []
@@ -121,7 +136,6 @@ def gen_conformer(query_file, scan_steps=6, charge=0, output_dir="conformers", s
         scan_atoms[2],
         scan_atoms[3]
     )
-    output_dir.mkdir(exist_ok=True)
 
     xtb_input = write_xtb_input(dihedral_atoms, dihedral_angles, 
                                 scan_atoms, scan_type="dihedral", 

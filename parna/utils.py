@@ -9,7 +9,7 @@ import yaml
 import random
 import openfe
 from parna.constant import ATOMIC_NUMBERS
-from parna.atom_mapper import FuzzyElementCompareAtoms
+from parna.atom_mapper import FuzzyElementCompareAtoms, CompareChiralElements
 
 SLURM_HEADER_CPU = """#!/bin/bash
 source /etc/profile
@@ -41,11 +41,24 @@ def rd_load_file(
             pmd_mol = pmd.load_file(str(infile))
             PeriodicTable = Chem.GetPeriodicTable()
             for atom in pmd_mol.atoms:
-                atom.type = PeriodicTable.GetElementSymbol(atom.element)
-            tmp_file = str(f"{infile.parent/Path(infile).stem}._tmp.{random.randint(1000, 9999)}.mol2")
-            pmd_mol.save(tmp_file, overwrite=True)
-            mol = Chem.MolFromMol2File(tmp_file, removeHs=removeHs, sanitize=sanitize)
-            os.remove(tmp_file)
+                #BUG: a known bug. Parmed does not recognize Br and Cl. The `atom.element` 
+                # will be "B" and "C" instead of "Br" and "Cl".
+                if atom.type.strip().lower() in ["br", "cl"]:
+                    atom.type = atom.type
+                else:
+                    atom.type = PeriodicTable.GetElementSymbol(atom.element)
+            tmp_mol2_file = str(f"{infile.parent/Path(infile).stem}._tmp.{random.randint(1000, 9999)}.mol2")
+            tmp_pdb_file  = str(f"{infile.parent/Path(infile).stem}._tmp.{random.randint(1000, 9999)}.pdb")
+            pmd_mol.save(tmp_mol2_file, overwrite=True)
+            pmd_mol.save(tmp_pdb_file, overwrite=True)
+            mol = Chem.MolFromMol2File(tmp_mol2_file, removeHs=removeHs, sanitize=sanitize)
+            _mol = Chem.MolFromPDBFile(tmp_pdb_file, removeHs=removeHs, sanitize=sanitize)
+            for i in range(mol.GetNumAtoms()):
+                # set residue info
+                mol.GetAtomWithIdx(i).SetPDBResidueInfo(_mol.GetAtomWithIdx(i).GetPDBResidueInfo())
+            os.remove(tmp_mol2_file)
+            os.remove(tmp_pdb_file)
+            del _mol
         else:
             mol = Chem.MolFromMol2File(str(infile), removeHs=removeHs, sanitize=sanitize)
     elif infile.suffix == ".xyz":
@@ -76,9 +89,9 @@ def atomName_to_index(mol):
     return atomName_to_index
 
 
-def get_mapping_from_pattern(pattern, mol1, mol2):
-    template_Match = mol1.GetSubstructMatch(pattern)
-    query_Match = mol2.GetSubstructMatch(pattern)
+def get_mapping_from_pattern(pattern, mol1, mol2, useChirality=True):
+    template_Match = mol1.GetSubstructMatch(pattern, useChirality=useChirality)
+    query_Match = mol2.GetSubstructMatch(pattern, useChirality=useChirality)
     atom_mapping = list(zip(template_Match, query_Match))
     return atom_mapping
 
@@ -137,20 +150,37 @@ def map_atoms(template, query, ringMatchesRingOnly=False, \
         bondCompare=rdFMCS.BondCompare.CompareAny, 
         completeRingsOnly=False, 
         atomCompare=rdFMCS.AtomCompare.CompareElements,
-        fuzzy_matching=False
+        fuzzy_matching=False,
+        matchChiralTag=False,
     ):
+    
+    params = rdFMCS.MCSParameters()
+    params.BondTyper = bondCompare
+    
+    if matchChiralTag:
+        Chem.AssignStereochemistryFrom3D(template)
+        Chem.AssignStereochemistryFrom3D(query)
+        # Chem.AssignStereochemistry(template, force=True, cleanIt=True)
+        # Chem.AssignStereochemistry(query, force=True, cleanIt=True)
+        atomCompare = CompareChiralElements(
+            Chem.FindMolChiralCenters(template, includeUnassigned=True),
+            Chem.FindMolChiralCenters(query, includeUnassigned=True)
+        )
+    params.AtomTyper = atomCompare
+    params.CompleteRingsOnly = completeRingsOnly
+    params.RingMatchesRingOnly = ringMatchesRingOnly
+    params.matchChiralTag = matchChiralTag
+    params.MatchChiralTag = matchChiralTag
+    
     mcs = rdFMCS.FindMCS(
-            [template, query], 
-            ringMatchesRingOnly=ringMatchesRingOnly,  # PDB doesn't have ring information
-         bondCompare=bondCompare,  # PDB doesn't have bond order,
-         completeRingsOnly=completeRingsOnly,
-         atomCompare=atomCompare
+        [template, query], 
+        params
     )
     patt = Chem.MolFromSmarts(mcs.smartsString)
     atom_mapping = get_mapping_from_pattern(
-        patt, template, query
+        patt, template, query, useChirality=matchChiralTag
     )
-    # print(atom_mapping, "here")
+    
     if fuzzy_matching:
         atom_mapping = constrained_map_atoms(
             template, query, atom_mapping, 
@@ -186,7 +216,8 @@ def antechamber(input_file, input_type, output, atom_type, residue_name, charge=
     command = [
         "antechamber", "-fi", str(input_type), "-i", str(input_file),
         "-fo", "mol2", "-o", str(output), "-at", atom_type,
-        "-rn", residue_name, "-pf", "y", "-seq", "n", "-nc", str(charge)
+        "-rn", residue_name, "-pf", "y", "-seq", "n", "-nc", str(charge),
+        "-dr", "no"
     ]
     print(" ".join(command))
     os.system(" ".join(command))

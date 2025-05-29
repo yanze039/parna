@@ -47,8 +47,13 @@ def flexible_align(mobile, template, atom_mapping=None, force_constant=100.0, ma
     if atom_mapping is None:
         atom_mapping = map_atoms(mobile, template)
     _ = rdMolAlign.AlignMol(mobile, template, atomMap=atom_mapping)
-    mp = MMFFGetMoleculeProperties(mobile)
-    ff = MMFFGetMoleculeForceField(mobile, mp)
+    from rdkit.Chem import rdForceFieldHelpers
+    if not rdForceFieldHelpers.MMFFHasAllMoleculeParams(mobile):
+        print("MMFF parameters are missing for some atoms.")
+        ff = AllChem.UFFGetMoleculeForceField(mobile)
+    else:
+        mp = MMFFGetMoleculeProperties(mobile)
+        ff = MMFFGetMoleculeForceField(mobile, mp)
     template_conf = template.GetConformer(0)
     for i_q, i_t in atom_mapping:
         p_t = template_conf.GetAtomPosition(i_t)
@@ -224,7 +229,9 @@ class MoleculeFactory:
         generate_frcmod(
             input_file=str(tmp_mol2),
             output_file=str(output_dir/f"{pdb_file.stem}.frcmod"),
-            sinitize=False
+            sinitize=False,
+            clean=False,
+            output_mol2=tmp_mol2
         )
         mol2_pmd = pmd.load_file(str(tmp_mol2))
         for atom in mol2_pmd.atoms:

@@ -135,13 +135,15 @@ def build_backbone(
 
 def build_residue_pdb_block(
         input_file, residue_name, template_residue, 
-        atomtype=Chem.rdFMCS.AtomCompare.CompareAnyHeavyAtom, 
-        bondCompare=Chem.rdFMCS.BondCompare.CompareOrder,
+        atomtype="amber", 
+        bondCompare=Chem.rdFMCS.BondCompare.CompareAny,
         residue_tail_idx=None, template_tail_idx=None, 
         residue_head_idx=None, template_head_idx=None,
         only_heavy_atoms=True, 
-        atomCompare=Chem.rdFMCS.AtomCompare.CompareAnyHeavyAtom,
-        fuzzy_matching=False
+        atomCompare=Chem.rdFMCS.AtomCompare.CompareElements,
+        fuzzy_matching=False,
+        matchChiralTag=False,
+        completeRingsOnly=True,
     ):
     logger.info(f"Building residue {residue_name} from {input_file} using template {template_residue}")
     rd_mol = rd_load_file(str(input_file), removeHs=False, atomtype=atomtype)
@@ -185,9 +187,10 @@ def build_residue_pdb_block(
     rd_mol = editable_mol.GetMol()
     
     atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, 
-                             completeRingsOnly=True, 
-                             atomCompare=Chem.rdFMCS.AtomCompare.CompareElements, 
-                             bondCompare=Chem.rdFMCS.BondCompare.CompareAny,
+                             matchChiralTag=matchChiralTag,
+                             completeRingsOnly=completeRingsOnly, 
+                             atomCompare=atomCompare, 
+                             bondCompare=bondCompare,
                              fuzzy_matching=fuzzy_matching)
     logger.info("Atom mapping:")
     logger.info(atom_mapping)
@@ -243,18 +246,25 @@ def build_residue_without_phosphate(input_file, atom_name_mapping,
                                     residue_name, charge, terminal=None,
                                     oxygen_type="dcase"
                                     ):
-    antechamber(
-        input_file=input_file, 
-        input_type=input_file.suffix[1:], 
-        output=input_file.parent/f"{residue_name}._amber.mol2", 
-        atom_type="amber", 
+    # antechamber(
+    #     input_file=input_file, 
+    #     input_type=input_file.suffix[1:], 
+    #     output=input_file.parent/f"{residue_name}._amber.mol2", 
+    #     atom_type="amber", 
+    #     residue_name=residue_name,
+    #     charge=charge
+    # )
+    get_amber_mol2(
+        input_file=input_file,
+        output_file=input_file.parent/f"{residue_name}._amber.mol2",
         residue_name=residue_name,
-        charge=charge
+        charge=charge,
     )
     pmd_mol = pmd.load_file(str(input_file.parent/f"{residue_name}._amber.mol2"))
     pmd_mol.fix_charges()
     
     if terminal == "3'":
+        pmd_mol.atoms[atom_name_mapping["C5'"]].type = "CI"
         pmd_mol.atoms[atom_name_mapping["O3'"]].charge = O3_charge_3p
         pmd_mol.atoms[atom_name_mapping["HO3'"]].charge = HO3_charge_3p
         pmd_mol.head = pmd_mol.atoms[atom_name_mapping["C5'"]]
@@ -274,6 +284,7 @@ def build_residue_without_phosphate(input_file, atom_name_mapping,
             pmd_mol.atoms[atom_name_mapping["HO3'"]],
         ]
     else:
+        pmd_mol.atoms[atom_name_mapping["C5'"]].type = "CI"
         pmd_mol.atoms[atom_name_mapping["O3'"]].charge = O3_charge
         # pmd_mol.atoms[atom_name_mapping["O3'"]].type = "OS"
         if oxygen_type == "dcase":
@@ -287,13 +298,43 @@ def build_residue_without_phosphate(input_file, atom_name_mapping,
             pmd_mol.atoms[atom_name_mapping["HO5'"]],
             pmd_mol.atoms[atom_name_mapping["O5'"]]
         ]
-    pmd_mol.atoms[atom_name_mapping["C5'"]].type = "CI"
+    
     for atom in atom_delete:
         pmd_mol.delete_atom(atom)
     
     os.remove(input_file.parent/f"{residue_name}._amber.mol2")
     return pmd_mol
 
+
+def get_amber_mol2(input_file, output_file, residue_name, charge, check_dummy=True):
+    input_file = Path(input_file)
+    antechamber(
+        input_file=str(input_file),
+        input_type=input_file.suffix[1:],
+        output=str(output_file),
+        atom_type="amber", 
+        residue_name=residue_name,
+        charge=charge
+    )
+    if check_dummy:
+        pmd_mol = pmd.load_file(str(output_file))
+        for atom in pmd_mol.atoms:
+            if atom.type == "DU" or atom.type == "NO" or atom.type == "N1":
+                # raise ValueError("Dummy atom detected in the molecule.")
+                tmp_gaff2_mol = output_file.parent/f"{residue_name}._gaff2.mol2"
+                if not os.path.exists(tmp_gaff2_mol):
+                    antechamber(
+                        input_file=str(input_file),
+                        input_type=input_file.suffix[1:],
+                        output=str(tmp_gaff2_mol),
+                        atom_type="gaff2", 
+                        residue_name=residue_name,
+                        charge=charge
+                    )
+                tmp_pmd_mol = pmd.load_file(str(tmp_gaff2_mol))
+                atom.type = tmp_pmd_mol.map[atom.name].type
+                os.remove(tmp_gaff2_mol)
+        pmd_mol.save(str(output_file), overwrite=True)
 
 def build_residue_with_phosphate(input_file, atom_name_mapping, 
                                  residue_name, charge, terminal=None,
@@ -320,13 +361,19 @@ def build_residue_with_phosphate(input_file, atom_name_mapping,
         _pmd_mol.atoms[i].xz = new_pos.z
     _pmd_mol.save(str(input_file.parent/f"{residue_name}._aligned._bk.mol2"), overwrite=True)
 
-    antechamber(
-        input_file=input_file.parent/f"{residue_name}._aligned._bk.mol2", 
-        input_type="mol2", 
-        output=input_file.parent/f"{residue_name}._amber.mol2", 
-        atom_type="amber", 
+    # antechamber(
+    #     input_file=input_file.parent/f"{residue_name}._aligned._bk.mol2", 
+    #     input_type="mol2", 
+    #     output=input_file.parent/f"{residue_name}._amber.mol2", 
+    #     atom_type="amber", 
+    #     residue_name=residue_name,
+    #     charge=charge
+    # )
+    get_amber_mol2(
+        input_file=input_file.parent/f"{residue_name}._aligned._bk.mol2",
+        output_file=input_file.parent/f"{residue_name}._amber.mol2",
         residue_name=residue_name,
-        charge=charge
+        charge=charge,
     )
     pmd_mol = pmd.load_file(str(input_file.parent/f"{residue_name}._amber.mol2"))
     pmd_mol.fix_charges()
@@ -472,13 +519,20 @@ def make_cap(
         if idx in mapping_dict:
             atom_name_mapping[name] = mapping_dict[idx]
      
-    antechamber(
-        input_file=input_file, 
-        input_type=input_file.suffix[1:], 
-        output=input_file.parent/f"{residue_name}._amber.mol2", 
-        atom_type="amber", 
+    # antechamber(
+    #     input_file=input_file, 
+    #     input_type=input_file.suffix[1:], 
+    #     output=input_file.parent/f"{residue_name}._amber.mol2", 
+    #     atom_type="amber", 
+    #     residue_name=residue_name,
+    #     charge=charge
+    # )
+    get_amber_mol2(
+        input_file=input_file,
+        output_file=input_file.parent/f"{residue_name}._amber.mol2",
         residue_name=residue_name,
-        charge=charge
+        charge=charge,
+        check_dummy=True
     )
     pmd_mol = pmd.load_file(str(input_file.parent/f"{residue_name}._amber.mol2"))
     pmd_mol.fix_charges()
@@ -529,13 +583,20 @@ def make_linker(
             if neighbor.GetAtomicNum() == 8 and neighbor.GetDegree() == 1:
                 OP_atoms.append(neighbor.GetIdx())
 
-    antechamber(
-        input_file=input_file, 
-        input_type=input_file.suffix[1:], 
-        output=input_file.parent/f"{residue_name}._amber.mol2", 
-        atom_type="amber", 
+    # antechamber(
+    #     input_file=input_file, 
+    #     input_type=input_file.suffix[1:], 
+    #     output=input_file.parent/f"{residue_name}._amber.mol2", 
+    #     atom_type="amber", 
+    #     residue_name=residue_name,
+    #     charge=charge
+    # )
+    get_amber_mol2(
+        input_file=input_file,
+        output_file=input_file.parent/f"{residue_name}._amber.mol2",
         residue_name=residue_name,
-        charge=charge
+        charge=charge,
+        check_dummy=False
     )
     
     pmd_mol = pmd.load_file(str(input_file.parent/f"{residue_name}._amber.mol2"))
@@ -622,11 +683,17 @@ def make_fragment_cap(
     output_dir.mkdir(exist_ok=True)
     
     amber_mol2_file = output_dir/f"{residue_name}._amber.mol2"
-    antechamber(
-        input_file=input_file, 
-        input_type="mol2", 
-        output=str(amber_mol2_file), 
-        atom_type="amber", 
+    # antechamber(
+    #     input_file=input_file, 
+    #     input_type="mol2", 
+    #     output=str(amber_mol2_file), 
+    #     atom_type="amber", 
+    #     residue_name=residue_name,
+    #     charge=charge
+    # )
+    get_amber_mol2(
+        input_file=input_file,
+        output_file=amber_mol2_file,
         residue_name=residue_name,
         charge=charge
     )
