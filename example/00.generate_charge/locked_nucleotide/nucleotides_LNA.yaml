@@ -1,0 +1,12 @@
+additional_frcmods: []
+charge: 0
+external_libs: []
+extract: true
+extract_output_dir: backbone.lib
+input_pdb: LNA.pdb
+method_basis: wB97X-V/def2-TZVP
+n_conformers: 6
+psi4_memory: 160 GB
+psi4_threads: 48
+resname: LNA
+skip_constraint: null

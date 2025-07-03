@@ -1,0 +1,125 @@
+{
+    "cuda": true,
+    "serial_execute": "pmemd.cuda",
+    "mpi_execute": "pmemd.cuda.MPI",
+    "protocol": "unified",
+    "remd": true,
+    "np": 25,
+    "ng": 25,
+    "prep": {
+        "temp": 300,
+        "timask1": ":1-5",
+        "timask2": ":6-10",
+        "scmask1": ":2@N6,H61,H62,H2",
+        "scmask2": ":7@S01,H12,N01,H20,H21",
+        "aces": 1,
+        "em": {
+            "maxcyc": 2000,
+            "resstraint_wt": 5.0
+        },
+        "heat": {
+            "nsteps": 150000,
+            "resstraint_wt": 5.0,
+            "ofreq": 50000
+        },
+        "pressurize_res": {
+            "nsteps": 100000,
+            "resstraint_wt": 5.0,
+            "ofreq": 10000
+        },
+        "pressurize": {
+            "nsteps": 2500000,
+            "ofreq": 500000
+        }
+    },
+    "TI": {
+        "temp": 300,
+        "em": {
+            "maxcyc": 5000,
+            "resstraint_wt": 5.0
+        },
+        "heat": {
+            "nsteps": 50000,
+            "resstraint_wt": 5.0,
+            "ofreq": 5000
+        },
+        "pressurize_res": {
+            "nsteps": 100000,
+            "resstraint_wt": 5.0,
+            "ofreq": 30000
+        },
+        "pressurize": {
+            "nsteps": 500000,
+            "ofreq": 50000
+        },
+        "production": {
+            "nsteps": 1000,
+            "numexchg": 2500,
+            "ntwe": 0,
+            "ntwx": 500000,
+            "ntwr": 50000,
+            "ntpr": 1000
+        }
+    },
+    "unified": {
+        "lambdas": [
+            0.0,
+            0.041667,
+            0.083333,
+            0.125,
+            0.166667,
+            0.208333,
+            0.25,
+            0.291667,
+            0.333333,
+            0.375,
+            0.416667,
+            0.458333,
+            0.5,
+            0.541667,
+            0.583333,
+            0.625,
+            0.666667,
+            0.708333,
+            0.75,
+            0.791667,
+            0.833333,
+            0.875,
+            0.916667,
+            0.958333,
+            1.0
+        ],
+        "ifsc": 1,
+        "aces": 1,
+        "scalpha": 0.5,
+        "scbeta": 1.0,
+        "timask1": ":1-5",
+        "timask2": ":6-10",
+        "scmask1": ":2@N6,H61,H62,H2",
+        "scmask2": ":7@S01,H12,N01,H20,H21",
+        "crgmask": ""
+    },
+    "aces_setting": {
+        "scalpha": 0.5,
+        "scbeta": 1.0,
+        "gti_cut": 1,
+        "gti_output": 0,
+        "gti_add_sc": 5,
+        "gti_scale_beta": 1,
+        "gti_cut_sc_on": 8,
+        "gti_cut_sc_off": 10,
+        "gti_lam_sch": 1,
+        "gti_ele_sc": 1,
+        "gti_vdw_sc": 1,
+        "gti_cut_sc": 2,
+        "gti_ele_exp": 2,
+        "gti_vdw_exp": 2,
+        "gti_syn_mass": 0
+    },
+    "slurm_env": [
+        "source /etc/profile",
+        "module load cuda/11.2",
+        "module load mpi/openmpi-4.1.5 ",
+        "source $HOME/env/amber22.env"
+    ]
+}
