@@ -154,28 +154,35 @@ def map_atoms(template, query, ringMatchesRingOnly=False, \
         matchChiralTag=False,
     ):
     
-    params = rdFMCS.MCSParameters()
-    params.BondTyper = bondCompare
+    
     
     if matchChiralTag:
         Chem.AssignStereochemistryFrom3D(template)
         Chem.AssignStereochemistryFrom3D(query)
-        # Chem.AssignStereochemistry(template, force=True, cleanIt=True)
-        # Chem.AssignStereochemistry(query, force=True, cleanIt=True)
         atomCompare = CompareChiralElements(
             Chem.FindMolChiralCenters(template, includeUnassigned=True),
             Chem.FindMolChiralCenters(query, includeUnassigned=True)
         )
-    params.AtomTyper = atomCompare
-    params.CompleteRingsOnly = completeRingsOnly
-    params.RingMatchesRingOnly = ringMatchesRingOnly
-    params.matchChiralTag = matchChiralTag
-    params.MatchChiralTag = matchChiralTag
-    
-    mcs = rdFMCS.FindMCS(
-        [template, query], 
-        params
-    )
+        params = rdFMCS.MCSParameters()
+        params.BondTyper = bondCompare
+        params.AtomTyper = atomCompare
+        params.CompleteRingsOnly = completeRingsOnly
+        params.RingMatchesRingOnly = ringMatchesRingOnly
+        params.matchChiralTag = matchChiralTag
+        params.MatchChiralTag = matchChiralTag
+        mcs = rdFMCS.FindMCS(
+            [template, query], 
+            params  
+        )
+    else:
+        mcs = rdFMCS.FindMCS(
+            [template, query], 
+            bondCompare=bondCompare,
+            atomCompare=atomCompare,
+            completeRingsOnly=completeRingsOnly,
+            ringMatchesRingOnly=ringMatchesRingOnly,
+            matchChiralTag=matchChiralTag,
+        )
     patt = Chem.MolFromSmarts(mcs.smartsString)
     atom_mapping = get_mapping_from_pattern(
         patt, template, query, useChirality=matchChiralTag

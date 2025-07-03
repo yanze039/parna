@@ -7,14 +7,15 @@ from parna.logger import getLogger
 logger = getLogger(__name__)
 
 
-def get_softcore_region(query, template, return_atom_name=False, on_linker=False):
+def get_softcore_region(query, template, return_atom_name=False, on_linker=False, extensive=False):
     atom_mapping = map_atoms(query, template, ringMatchesRingOnly=True, 
                              atomCompare=rdFMCS.AtomCompare.CompareElements, 
-                             matchChiralTag=True,
+                             matchChiralTag=False,
                              completeRingsOnly=True)
-    atom_mapping_openfe = map_atoms_openfe(query, template, element_change=False)
-    if len(atom_mapping_openfe) < len(atom_mapping):
-        atom_mapping = atom_mapping_openfe
+    if extensive:
+        atom_mapping_openfe = map_atoms_openfe(query, template, element_change=False)
+        if len(atom_mapping_openfe) < len(atom_mapping):
+            atom_mapping = atom_mapping_openfe
     query_common_core = [x[0] for x in atom_mapping]
     template_common_core = [x[1] for x in atom_mapping]
     if on_linker:

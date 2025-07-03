@@ -6,10 +6,9 @@ import os
 import numpy as np
 import random
 
-from parna.utils import antechamber, atomName_to_index, map_atoms, rd_load_file, read_yaml
+from parna.utils import antechamber, atomName_to_index, map_atoms, rd_load_file, read_yaml, map_atoms_openfe
 from parna.molops import flexible_align
 from parna.molops import ortho_frame, rotate_conformer, translate_conformer
-
 from parna.logger import getLogger
 
 logger = getLogger(__name__)
@@ -144,6 +143,7 @@ def build_residue_pdb_block(
         fuzzy_matching=False,
         matchChiralTag=False,
         completeRingsOnly=True,
+        use_openfe=False
     ):
     logger.info(f"Building residue {residue_name} from {input_file} using template {template_residue}")
     rd_mol = rd_load_file(str(input_file), removeHs=False, atomtype=atomtype)
@@ -185,17 +185,30 @@ def build_residue_pdb_block(
     
     rd_tmpl_block = editable_tmpl_mol.GetMol() 
     rd_mol = editable_mol.GetMol()
+
+    print(">>> rd_mol:", rd_mol)
+    print(">>> rd_tmpl_block:", rd_tmpl_block)
+    print("completeRingsOnly:", completeRingsOnly)
+    print("matchChiralTag:", matchChiralTag)
+    print("fuzzy_matching:", fuzzy_matching)
+
     
-    atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, 
-                             matchChiralTag=matchChiralTag,
-                             completeRingsOnly=completeRingsOnly, 
-                             atomCompare=atomCompare, 
-                             bondCompare=bondCompare,
-                             fuzzy_matching=fuzzy_matching)
+    if use_openfe:
+        atom_mapping = map_atoms_openfe(
+            rd_tmpl_block, 
+            rd_mol, 
+        )
+    else:
+        atom_mapping = map_atoms(rd_tmpl_block, rd_mol, ringMatchesRingOnly=True, 
+                                matchChiralTag=matchChiralTag,
+                                completeRingsOnly=completeRingsOnly, 
+                                atomCompare=atomCompare, 
+                                bondCompare=bondCompare,
+                                fuzzy_matching=fuzzy_matching)
     logger.info("Atom mapping:")
     logger.info(atom_mapping)
-    logger.info(f"{template_head_idx} {residue_head_idx}, ")
-    logger.info(f"{template_tail_idx} {residue_tail_idx}, ")
+    logger.info(f"Head mapping: {template_head_idx} {residue_head_idx}, ")
+    logger.info(f"Tail mapping: {template_tail_idx} {residue_tail_idx}, ")
     
     if residue_head_idx is not None and template_head_idx is not None:
         editable_mol.RemoveAtom((new_atom_head_idx))
@@ -217,7 +230,7 @@ def build_residue_pdb_block(
         rd_mol,
         rd_tmpl_block,
         atom_mapping=inverse_atom_mapping,
-        force_constant=300.0,
+        force_constant=500.0,
     )
 
     # Find BUG: the atom names are not preserved from mol2. we use parmed to fix this.
@@ -238,6 +251,16 @@ def build_residue_pdb_block(
         elif line.startswith("HETATM"):
             line = "ATOM  " + line[6:17] + f"{residue_name:>3}" + line[20:]
             atom_list.append(line)
+    
+    line_order = []
+    inverse_atom_mapping.sort(key=lambda x: x[0])
+    for idx, (i, j) in enumerate(inverse_atom_mapping):
+        line_order.append(i)
+    
+    for idx in range(len(atom_list)):
+        if idx not in line_order:
+            line_order.append(idx)
+    atom_list = [atom_list[i] for i in line_order]
     os.remove(tmp_pdb)
     return "\n".join(atom_list)
 
@@ -344,7 +367,8 @@ def build_residue_with_phosphate(input_file, atom_name_mapping,
     # align to template
     rd_mol = rd_load_file(input_file, removeHs=False)
     template = Chem.MolFromPDBFile(str(TEMPLATE/"sugar_template.pdb"), removeHs=False)
-    atom_maps = map_atoms(rd_mol, template, fuzzy_matching=True)
+    atom_maps = map_atoms(rd_mol, template, fuzzy_matching=False)
+    # don't do fuzzy matching here, otherwise the alignment will have irregular conformers.
     new_mol = flexible_align(
         rd_mol,
         template,
@@ -361,14 +385,6 @@ def build_residue_with_phosphate(input_file, atom_name_mapping,
         _pmd_mol.atoms[i].xz = new_pos.z
     _pmd_mol.save(str(input_file.parent/f"{residue_name}._aligned._bk.mol2"), overwrite=True)
 
-    # antechamber(
-    #     input_file=input_file.parent/f"{residue_name}._aligned._bk.mol2", 
-    #     input_type="mol2", 
-    #     output=input_file.parent/f"{residue_name}._amber.mol2", 
-    #     atom_type="amber", 
-    #     residue_name=residue_name,
-    #     charge=charge
-    # )
     get_amber_mol2(
         input_file=input_file.parent/f"{residue_name}._aligned._bk.mol2",
         output_file=input_file.parent/f"{residue_name}._amber.mol2",

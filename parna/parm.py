@@ -158,6 +158,8 @@ def alchemical_parameterize(oligoFile1, oligoFile2, proteinFile=None, external_l
         leap_content.append(f"complex = combine {{ oligo1 oligo2 protein }}")
     else:
         leap_content.append(f"complex = combine {{ oligo1 oligo2 }}")
+    leap_content.append(f"center complex")
+    leap_content.append(f"translate complex {{13.0, 13.0, 13.0}}")
     leap_content.append(f"solvatebox complex TIP3PBOX 15.0 0.75")
     leap_content.append(f"addionsrand complex Na+ {n_cations}")
     leap_content.append(f"addionsrand complex Cl- {n_anions}")
