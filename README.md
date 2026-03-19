@@ -28,7 +28,7 @@
     <li><a href="#roadmap">Roadmap</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
-    <li><a href="#contact">Contact</a></li>
+    <li><a href="#links">Links</a></li>
     <li><a href="#acknowledgments">Acknowledgments</a></li>
   </ol>
 </details> -->
@@ -37,7 +37,7 @@
 <!-- ABOUT THE PROJECT -->
 ## About The Project
 
-PARNA is a parameterization workflow for nucleotides and their derivatives. It is premarily designed to parameterize the non-canonical nucleotides. Through the canonical nucleotides can be parameterized by `PARNA`, please also refer to more specifically optimized force fields if your system only involve canonical ribo-nucleotides. 
+PARNA is a parameterization workflow for nucleotides and their derivatives.
 
 <p align="center">
 <img src="assets/workflow.png" alt="Workflow of PARNA" width="600" style="border:1px solid #ccc">
@@ -51,9 +51,8 @@ PARNA is a parameterization workflow for nucleotides and their derivatives. It i
 ## Getting Started
 
 ### Installation
-You can use the following command or just append the package path to the system `PATH` env.
 ```
-python setup.pu install
+python setup.py install
 ```
 
 <!-- USAGE EXAMPLES -->
@@ -69,10 +68,8 @@ Refer to the [example](example) folder for detailed usage.
 <img src="assets/performance.png" alt="Performance of PARNA" width="600" style="border:1px solid #ccc">
 </p>
 
-<!-- CONTACT -->
-## Contact
-
-Yanze Wang - yanze039@mit.edu
+<!-- LINKS -->
+## Links
 
 Project Link: [https://github.com/yanze039/parna](https://github.com/yanze039/parna)
 
@@ -85,7 +82,8 @@ For FEP/TI calculations, please also refer to the `amberti` wrapper.
 <!-- ACKNOWLEDGMENTS -->
 ## Acknowledgments
 
-`PARNA` is built on many excellent packages and insightful work.
+
+`PARNA` is built on the following packages.
 
 ### Packages and Softwares
 
@@ -94,9 +92,7 @@ For FEP/TI calculations, please also refer to the `amberti` wrapper.
 * [Psi4](https://psicode.org/psi4manual/1.9.x/dft.html)
 * [ParmEd](https://github.com/ParmEd/ParmEd)
 
-### Insightful Work
-
-`PARNA` has adopted or followed the following works. I highly recommend reading them to learn the development of RNA Class 1 force field.
+### Reference
 
 > (1) Mlýnský, V.; Kührová, P.; Pykal, M.; Krepl, M.; Stadlbauer, P.; Otyepka, M.; Banáš, P.; Šponer, J. Can We Ever Develop an Ideal RNA Force Field? Lessons Learned from Simulations of the UUCG RNA Tetraloop and Other Systems. J. Chem. Theory Comput. 2025, acs.jctc.4c01357. https://doi.org/10.1021/acs.jctc.4c01357.
 
@@ -106,13 +102,11 @@ For FEP/TI calculations, please also refer to the `amberti` wrapper.
 
 > (4) Ivani, I.; Dans, P. D.; Noy, A.; Pérez, A.; Faustino, I.; Hospital, A.; Walther, J.; Andrio, P.; Goñi, R.; Balaceanu, A.; Portella, G.; Battistini, F.; Gelpí, J. L.; González, C.; Vendruscolo, M.; Laughton, C. A.; Harris, S. A.; Case, D. A.; Orozco, M. Parmbsc1: A Refined Force Field for DNA Simulations. Nat Methods 2016, 13 (1), 55–58. https://doi.org/10.1038/nmeth.3658.
 
-There are also many amazing papers that inspired the development of `PARNA`. Please refer to the reference list in our manuscript. 
+The authors thank Yingze Wang (UCB), Dr. Xinyan Wang (DPTechnology) and Weiliang Luo (MIT) for the discussion about implementation details. 
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-### More personal
 
-Many thanks to Yingze Wang (UCB), Xinyan Wang (DPTechnology) and Weiliang Luo (MIT) for the discussion about technical details throughout the project. 
 
 <!-- MARKDOWN LINKS & IMAGES -->
 <!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
